@@ -79,6 +79,29 @@
 .personaDraftCreate:disabled, .personaDraftResume:disabled, .personaDraftDelete:disabled,
 .personaInterviewActions button:disabled { cursor: default; opacity: .4; }
 .personaDraftResumeBlock { margin-top: 30px; padding-top: 22px; border-top: 1px solid var(--edge); }
+.personaImportChoose { margin: 12px 0 0 8px; padding: 9px 12px; border: 1px solid var(--edge);
+  border-radius: 8px; background: transparent; color: var(--dim); font-size: 9.5px;
+  font-weight: 700; letter-spacing: .1em; cursor: pointer; }
+.personaImportAudit { margin-top: 20px; padding: 16px; border: 1px solid var(--edge);
+  border-radius: 10px; background: var(--surface); }
+.personaImportAudit[hidden] { display: none; }
+.personaImportSource { color: var(--faint); font: 10.5px/1.5 Consolas, monospace;
+  margin-top: 8px; overflow-wrap: anywhere; user-select: text; }
+.personaImportName, .personaImportUseCase { width: 100%; margin-top: 7px; padding: 9px 11px;
+  border: 1px solid var(--edge); border-radius: 8px; background: var(--bg); color: var(--text);
+  user-select: text; }
+.personaImportUseCase { min-height: 62px; resize: vertical; }
+.personaImportFindings { color: var(--faint); font-size: 10.5px; line-height: 1.5; margin-top: 12px; }
+.personaImportFindings[data-tone="warning"] { color: var(--warning); }
+.personaImportMappings { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.personaImportMappings > div { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; color: var(--dim); font-size: 11px; }
+.personaImportMappings select { width: min(300px, 55%); padding: 7px 9px; border: 1px solid var(--edge);
+  border-radius: 7px; background: var(--bg); color: var(--text); }
+.personaImportCreate { margin-top: 14px; padding: 9px 13px; border: 1px solid var(--accent);
+  border-radius: 8px; background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text); font-size: 9.5px; font-weight: 700; letter-spacing: .1em; cursor: pointer; }
+.personaImportCreate:disabled { opacity: .4; cursor: default; }
 .personaDraftResumeLabel { color: var(--faint); font-size: 9px; font-weight: 700;
   letter-spacing: .18em; }
 .personaDraftSelect { width: min(520px, 100%); margin-right: 8px; }
@@ -171,6 +194,19 @@
 .personaCanonicalSave:disabled, .personaPreviewGenerate:disabled { opacity: .4; cursor: default; }
 .personaSectionRegen { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
 .personaSectionSelect { flex: 1; margin-top: 0; }
+.personaValidationBlock { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--edge); }
+.personaValidatePreview, .personaAcceptCanonical { padding: 9px 12px; border: 1px solid var(--accent);
+  border-radius: 8px; background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text); font-size: 9.5px; font-weight: 700; letter-spacing: .1em; cursor: pointer; }
+.personaAcceptCanonical { margin-left: 8px; border-color: var(--warning); }
+.personaAcceptCanonical[hidden] { display: none; }
+.personaValidationSummary { color: var(--faint); font-size: 11px; margin-top: 10px; }
+.personaValidationSummary[data-tone="good"] { color: var(--good); }
+.personaValidationSummary[data-tone="warning"] { color: var(--warning); }
+.personaValidationFindings { display: flex; flex-direction: column; gap: 5px; margin-top: 8px; }
+.personaValidationFindings > div { color: var(--dim); font-size: 10.5px; line-height: 1.45; }
+.personaValidationFindings > div[data-tone="error"] { color: var(--critical); }
+.personaValidationFindings > div[data-tone="warning"] { color: var(--warning); }
 @media (max-width: 720px) {
   .personaActionGrid { grid-template-columns: 1fr; }
 }

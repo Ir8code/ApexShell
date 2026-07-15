@@ -12,6 +12,8 @@ const draftStore = require('../extensions/personas/lib/drafts');
 const { CARDS, KEYS } = require('../extensions/personas/lib/interview');
 const previewRenderer = require('../extensions/personas/lib/render');
 const personaContract = require('../extensions/personas/lib/contract');
+const previewValidator = require('../extensions/personas/lib/validator');
+const importer = require('../extensions/personas/lib/importer');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-persona-extension-'));
 let passed = 0;
@@ -653,6 +655,198 @@ function collaborationChoices(access = 'read-only') {
       assert.equal(unchanged.preview, null);
     });
 
+    await gate('preview validator separates errors, warnings, and suggestions', () => {
+      const workspace = path.join(scratch, 'validator-workspace');
+      fs.mkdirSync(path.join(workspace, 'personas'), { recursive: true });
+      const draft = {
+        name: 'Rowan',
+        useCase: 'Review.',
+        answers: completeAnswers('Short'),
+      };
+      draft.preview = previewRenderer.renderBundle(draft, previewChoices());
+      const report = previewValidator.validatePreview(workspace, draft, foundation.DEFAULT_FOUNDATION);
+      assert.equal(report.valid, true);
+      assert.equal(report.errors.length, 0);
+      assert.equal(report.warnings.length, 0);
+      assert.equal(report.suggestions.filter((finding) => finding.code === 'thin-area').length, 6);
+
+      fs.mkdirSync(path.join(workspace, 'personas', 'rowan'));
+      const collision = previewValidator.validatePreview(workspace, draft, foundation.DEFAULT_FOUNDATION);
+      assert.equal(collision.valid, false);
+      assert.equal(collision.errors.some((finding) => finding.code === 'persona-collision'), true);
+    });
+
+    await gate('manual canonical hash repair is explicit and clears only drift', () => {
+      const workspace = path.join(scratch, 'validator-drift-workspace');
+      fs.mkdirSync(workspace);
+      const draft = { name: 'Rowan', useCase: 'Review.', answers: completeAnswers('Detailed '.repeat(20)) };
+      const generated = previewRenderer.renderBundle(draft, previewChoices());
+      draft.preview = previewRenderer.withCanonicalEdit(generated,
+        generated.canonical.replace('# Rowan', '# Rowan — manually approved'));
+      const drift = previewValidator.validatePreview(workspace, draft, '');
+      const finding = drift.warnings.find((item) => item.code === 'canonical-drift');
+      assert.equal(finding.repair, 'accept-canonical');
+      const accepted = previewRenderer.acceptCanonical(draft.preview);
+      assert.equal(accepted.canonicalDrift, false);
+      assert.equal(accepted.blueprint.canonical_hash, personaContract.hashCanonical(accepted.canonical));
+      draft.preview = accepted;
+      assert.equal(previewValidator.validatePreview(workspace, draft, '').warnings
+        .some((item) => item.code === 'canonical-drift'), false);
+    });
+
+    await gate('legacy import audit is read-only and proposes semantic mappings', () => {
+      const source = path.join(scratch, 'Legacy Reviewer');
+      fs.mkdirSync(source);
+      const canonicalFile = path.join(source, 'legacy.md');
+      const text = [
+        '---',
+        'name: legacy-reviewer',
+        'display_name: Legacy Reviewer',
+        'description: Reviews old systems.',
+        'tier: specialist',
+        '---',
+        '# Legacy Reviewer',
+        '## Who I Am',
+        'A careful historical reviewer.',
+        '## Mission and Scope',
+        'Review old systems.',
+        '## Unusual Rituals',
+        'Preserve this role-specific section.',
+      ].join('\n');
+      fs.writeFileSync(canonicalFile, text);
+      const before = fs.readFileSync(canonicalFile, 'utf8');
+      const audit = importer.auditImportFolder(source);
+      assert.equal(audit.errors.length, 0);
+      assert.deepEqual(audit.sections.map((section) => section.suggestedKey),
+        ['identity', 'mission', null]);
+      const answers = importer.answersFromMapping(audit, { 0: 'identity', 1: 'mission', 2: 'working_method' });
+      assert.match(answers.identity, /Who I Am/);
+      assert.match(answers.working_method, /Unusual Rituals/);
+      const preamble = importer.splitSections('# Preamble Persona\n\nKeep this unheaded context.\n\n## Identity\nKnown identity.');
+      assert.deepEqual(preamble.map((section) => section.heading), ['Preamble', 'Identity']);
+      assert.match(preamble[0].content, /Keep this unheaded context/);
+      assert.throws(() => importer.answersFromMapping({
+        sections: [{ index: 0, heading: 'Huge', content: 'x'.repeat(12001) }],
+      }, { 0: 'identity' }), /12,000 character limit/);
+      assert.equal(fs.readFileSync(canonicalFile, 'utf8'), before);
+    });
+
+    await gate('legacy import blocks explicit unsupported schema and linked sources', () => {
+      const source = path.join(scratch, 'unsupported-import');
+      const outside = path.join(scratch, 'unsupported-outside');
+      fs.mkdirSync(source);
+      fs.mkdirSync(outside);
+      fs.writeFileSync(path.join(source, 'unsupported-import.md'),
+        '---\nschema_version: 9\nname: old\n---\n# Old\n\nBody\n');
+      const audit = importer.auditImportFolder(source);
+      assert.equal(audit.errors.some((finding) => finding.code === 'schema-version'), true);
+      const linked = path.join(scratch, 'linked-import');
+      fs.symlinkSync(outside, linked, process.platform === 'win32' ? 'junction' : 'dir');
+      assert.throws(() => importer.auditImportFolder(linked), /regular directory, not a link/);
+    });
+
+    await gate('import bus creates only a mapped runtime draft', async () => {
+      const stateDir = path.join(scratch, 'import-bus-state');
+      const workspace = path.join(scratch, 'import-bus-workspace');
+      const source = path.join(scratch, 'import-bus-source');
+      fs.mkdirSync(workspace);
+      fs.mkdirSync(source);
+      const sourceFile = path.join(source, 'import-bus-source.md');
+      const sourceText = '---\nname: old\ndisplay_name: Old Guide\ndescription: Guides old work.\n---\n# Old\n## Identity\nPatient guide.\n## Role\nGuide work.\n';
+      fs.writeFileSync(sourceFile, sourceText);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      const bus = fakeBus();
+      persona.register({ bus, stateDir, async pickDirectory() { return source; } });
+      await bus.handlers.get('personaImportChoose')();
+      assert.equal(bus.posts[0].type, 'personaImportAudit');
+      const audit = bus.posts[0].payload;
+      bus.posts.length = 0;
+      bus.handlers.get('personaImportCreateDraft')({
+        sourceFolder: source,
+        name: audit.displayName,
+        useCase: audit.description,
+        mapping: { 0: 'identity', 1: 'mission' },
+      });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaImportResult', 'personaDraftStatus']);
+      assert.match(bus.posts[1].payload.draft.answers.identity, /Patient guide/);
+      assert.equal(fs.readFileSync(sourceFile, 'utf8'), sourceText);
+      assert.equal(fs.existsSync(path.join(workspace, 'old-guide')), false);
+      bus.posts.length = 0;
+      bus.handlers.get('personaImportCreateDraft')({
+        sourceFolder: source,
+        name: audit.displayName,
+        useCase: audit.description,
+        mapping: { 0: 'identity', 1: 'mission' },
+      });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaImportResult', 'toast']);
+      assert.equal(bus.posts[0].payload.ok, false);
+
+      const largeState = path.join(scratch, 'large-import-state');
+      const largeWorkspace = path.join(scratch, 'large-import-workspace');
+      const largeSource = path.join(scratch, 'large-import-source');
+      fs.mkdirSync(largeWorkspace);
+      fs.mkdirSync(largeSource);
+      const largeSections = KEYS.map((key) => `## ${key}\n${'\u0001'.repeat(11900)}`).join('\n');
+      fs.writeFileSync(path.join(largeSource, 'large-import-source.md'),
+        `---\nname: large\ndisplay_name: Large Import\ndescription: Tests cleanup.\n---\n# Large\n${largeSections}`);
+      persona.writeWorkspaceConfig(largeState, largeWorkspace);
+      foundation.createFoundation(largeWorkspace, foundation.DEFAULT_FOUNDATION);
+      const largeBus = fakeBus();
+      persona.register({ bus: largeBus, stateDir: largeState, async pickDirectory() { return largeSource; } });
+      await largeBus.handlers.get('personaImportChoose')();
+      largeBus.posts.length = 0;
+      largeBus.handlers.get('personaImportCreateDraft')({
+        sourceFolder: largeSource,
+        name: 'Large Import',
+        useCase: 'Tests cleanup.',
+        mapping: Object.fromEntries(KEYS.map((key, index) => [String(index), key])),
+      });
+      assert.equal(largeBus.posts[0].payload.ok, false);
+      assert.match(largeBus.posts[0].payload.error, /256 KB limit/);
+      assert.equal(draftStore.listDrafts(largeState, largeWorkspace).drafts.length, 0);
+      largeBus.posts.length = 0;
+      largeBus.handlers.get('personaImportCreateDraft')({
+        sourceFolder: largeSource,
+        name: 'Large Import',
+        useCase: 'Tests retained audit.',
+        mapping: { 0: 'identity' },
+      });
+      assert.equal(largeBus.posts[0].payload.ok, true);
+      assert.equal(draftStore.listDrafts(largeState, largeWorkspace).drafts.length, 1);
+    });
+
+    await gate('validation bus reports drift and explicit acceptance persists it', () => {
+      const stateDir = path.join(scratch, 'validation-bus-state');
+      const workspace = path.join(scratch, 'validation-bus-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      let draft = draftStore.createDraft(stateDir, workspace, { name: 'Rowan', useCase: 'Review.' });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, { answers: completeAnswers('Detailed '.repeat(20)) });
+      let bundle = previewRenderer.renderBundle(draft, previewChoices());
+      bundle = previewRenderer.withCanonicalEdit(bundle, bundle.canonical.replace('# Rowan', '# Rowan edited'));
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, { preview: bundle });
+      const bus = fakeBus();
+      persona.register({ bus, stateDir, async pickDirectory() { return null; } });
+      bus.handlers.get('personaPreviewValidate')({ id: draft.id });
+      assert.equal(bus.posts[0].type, 'personaValidationStatus');
+      assert.equal(bus.posts[0].payload.report.warnings.some((finding) => finding.repair), true);
+      bus.posts.length = 0;
+      bus.handlers.get('personaPreviewAcceptCanonical')({ id: draft.id, expectedRevision: draft.revision });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaPreviewResult', 'personaPreviewStatus']);
+      assert.equal(bus.posts[1].payload.bundle.canonicalDrift, false);
+      const acceptedDraft = bus.posts[1].payload.draft;
+      bus.posts.length = 0;
+      bus.handlers.get('personaPreviewGenerate')({
+        id: acceptedDraft.id,
+        expectedRevision: acceptedDraft.revision,
+        ...previewChoices(),
+      });
+      assert.equal(bus.posts[0].type, 'personaPreviewResult');
+      assert.equal(bus.posts[0].payload.needsConfirmation, true);
+    });
+
     await gate('renderer registers dock and drives workspace messages', () => {
       function makeNode() {
         return {
@@ -763,6 +957,28 @@ function collaborationChoices(access = 'read-only') {
         handlers.get('personaDraftList')({ workspace: path.join(scratch, 'ui-workspace'), cards: CARDS, drafts: [], warnings: [], error: null });
         assert.equal(nodes.get('.personaDraftHome').hidden, false);
         assert.equal(nodes.get('.personaDraftCreate').disabled, true);
+        nodes.get('.personaImportChoose').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaImportChoose');
+        handlers.get('personaImportAudit')({
+          sourceFolder: path.join(scratch, 'legacy-ui-persona'),
+          canonicalFile: path.join(scratch, 'legacy-ui-persona', 'legacy.md'),
+          displayName: 'Legacy UI Reviewer',
+          description: 'Reviews legacy interfaces.',
+          errors: [],
+          warnings: [],
+          sections: [
+            { index: 0, heading: 'Identity', suggestedKey: 'identity' },
+            { index: 1, heading: 'Odd Ritual', suggestedKey: null },
+          ],
+        });
+        assert.equal(nodes.get('.personaImportAudit').hidden, false);
+        assert.equal(nodes.get('.personaImportName').value, 'Legacy UI Reviewer');
+        assert.equal(nodes.get('.personaImportMappings').children.length, 2);
+        assert.equal(nodes.get('.personaImportCreate').disabled, false);
+        nodes.get('.personaImportMappings').children[1].children[1].value = 'working_method';
+        nodes.get('.personaImportCreate').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaImportCreateDraft');
+        assert.deepEqual(posts.at(-1).payload.mapping, { 0: 'identity', 1: 'working_method' });
         nodes.get('.personaDraftName').value = 'Rowan';
         nodes.get('.personaDraftUseCase').value = 'Review releases independently.';
         nodes.get('.personaDraftName').listeners.input();
@@ -852,6 +1068,33 @@ function collaborationChoices(access = 'read-only') {
         assert.equal(nodes.get('.personaCollaborationPreviewWrap').hidden, false);
         assert.match(nodes.get('.personaCollaborationPreview').textContent, /"read-only"/);
         assert.match(nodes.get('.personaCanonicalPreview').value, /# Rowan/);
+        nodes.get('.personaValidatePreview').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaPreviewValidate');
+        assert.equal(posts.at(-1).payload.id, previewUiDraft.id);
+        handlers.get('personaValidationStatus')({
+          report: {
+            valid: true,
+            errors: [],
+            warnings: [{
+              severity: 'warning',
+              code: 'canonical-drift',
+              message: 'Manual canonical text differs from its recorded hash.',
+              repair: 'accept-canonical',
+            }],
+            suggestions: [],
+          },
+        });
+        assert.equal(nodes.get('.personaAcceptCanonical').hidden, false);
+        const beforeDirtyAccept = posts.length;
+        nodes.get('.personaCanonicalPreview').value = uiBundle.canonical + '\nUnsaved edit.';
+        nodes.get('.personaCanonicalPreview').listeners.input();
+        nodes.get('.personaAcceptCanonical').listeners.click();
+        assert.equal(posts.length, beforeDirtyAccept);
+        assert.match(nodes.get('.personaPreviewReviewError').textContent, /Save or restore/);
+        nodes.get('.personaCanonicalRestore').listeners.click();
+        nodes.get('.personaAcceptCanonical').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaPreviewAcceptCanonical');
+        assert.equal(posts.at(-1).payload.expectedRevision, 7);
         nodes.get('.personaCanonicalPreview').value = uiBundle.canonical.replace('# Rowan', '# Rowan edited');
         nodes.get('.personaCanonicalPreview').listeners.input();
         assert.equal(nodes.get('.personaCanonicalSave').disabled, false);
@@ -892,7 +1135,7 @@ function collaborationChoices(access = 'read-only') {
       }
     });
 
-    console.log(`PERSONA EXTENSION: ${passed}/35 passed`);
+    console.log(`PERSONA EXTENSION: ${passed}/41 passed`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

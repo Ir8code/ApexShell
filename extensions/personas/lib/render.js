@@ -195,6 +195,18 @@ function regenerateSection(bundle, key, answer) {
   };
 }
 
+function acceptCanonical(bundle) {
+  if (!bundle || typeof bundle !== 'object' || typeof bundle.canonical !== 'string')
+    throw new Error('Generate a canonical preview first.');
+  const generatedCanonicalHash = hashCanonical(bundle.canonical);
+  return {
+    ...bundle,
+    generatedCanonicalHash,
+    blueprint: { ...bundle.blueprint, canonical_hash: generatedCanonicalHash },
+    canonicalDrift: false,
+  };
+}
+
 module.exports = {
   SECTION_HEADINGS,
   normalizePersonaId,
@@ -204,4 +216,5 @@ module.exports = {
   renderBundle,
   withCanonicalEdit,
   regenerateSection,
+  acceptCanonical,
 };

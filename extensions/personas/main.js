@@ -9,6 +9,8 @@ const foundation = require('./lib/foundation');
 const drafts = require('./lib/drafts');
 const { CARDS } = require('./lib/interview');
 const previewRenderer = require('./lib/render');
+const previewValidator = require('./lib/validator');
+const importer = require('./lib/importer');
 
 const CONFIG_FILE = 'workspace.json';
 
@@ -119,6 +121,7 @@ function register(ctx) {
   if (typeof ctx.pickDirectory !== 'function')
     throw new Error('Persona Builder requires the directory-picker service.');
   configPath(ctx.stateDir); // validate once at load, before registering handlers
+  let activeImportAudit = null;
 
   const publishStatus = () => ctx.bus.post('personaWorkspaceStatus', workspaceStatus(ctx.stateDir));
   const publishFoundation = () =>
@@ -264,18 +267,20 @@ function register(ctx) {
       const current = currentWorkspaceDraft(message && message.id);
       const stale = current.preview &&
         current.preview.sourceHash !== previewRenderer.draftSourceHash(current);
-      if (current.preview && (current.preview.canonicalDrift || stale) &&
-          (!message || message.confirmedOverwrite !== true)) {
-        const err = new Error('Regenerating everything will replace manual canonical edits or newer interview work.');
-        previewFailure('generate', err, { needsConfirmation: true });
-        return;
-      }
       const bundle = previewRenderer.renderBundle(current, {
         personaId: message && message.personaId,
         mode: message && message.mode,
         actions: message && message.actions,
         collaboration: message && message.collaboration,
       });
+      const replacesCanonical = current.preview &&
+        bundle.canonical !== current.preview.canonical;
+      if (current.preview && (current.preview.canonicalDrift || stale || replacesCanonical) &&
+          (!message || message.confirmedOverwrite !== true)) {
+        const err = new Error('Regenerating everything will replace manual canonical edits or newer interview work.');
+        previewFailure('generate', err, { needsConfirmation: true });
+        return;
+      }
       const draft = drafts.updateDraft(ctx.stateDir, current.id,
         message && message.expectedRevision, { preview: bundle });
       ctx.bus.post('personaPreviewResult', { ok: true, action: 'generated' });
@@ -328,6 +333,82 @@ function register(ctx) {
         stale: draft.preview.sourceHash !== previewRenderer.draftSourceHash(draft),
       });
     } catch (err) { previewFailure('section-regenerate', err); }
+  });
+
+  ctx.bus.on('personaPreviewValidate', (message) => {
+    try {
+      const draft = currentWorkspaceDraft(message && message.id);
+      const workspace = interviewWorkspace(ctx.stateDir);
+      const foundationText = foundation.inspectFoundation(workspace).content;
+      ctx.bus.post('personaValidationStatus', {
+        draftId: draft.id,
+        report: previewValidator.validatePreview(workspace, draft, foundationText),
+      });
+    } catch (err) {
+      ctx.bus.post('personaValidationStatus', {
+        draftId: null,
+        report: { valid: false, errors: [{ severity: 'error', code: 'validation', message: err.message }], warnings: [], suggestions: [] },
+      });
+    }
+  });
+
+  ctx.bus.on('personaPreviewAcceptCanonical', (message) => {
+    try {
+      const current = currentWorkspaceDraft(message && message.id);
+      const bundle = previewRenderer.acceptCanonical(current.preview);
+      const draft = drafts.updateDraft(ctx.stateDir, current.id,
+        message && message.expectedRevision, { preview: bundle });
+      ctx.bus.post('personaPreviewResult', { ok: true, action: 'canonical-accepted' });
+      ctx.bus.post('personaPreviewStatus', {
+        draft,
+        bundle: draft.preview,
+        stale: draft.preview.sourceHash !== previewRenderer.draftSourceHash(draft),
+      });
+    } catch (err) { previewFailure('canonical-accept', err); }
+  });
+
+  ctx.bus.on('personaImportChoose', async () => {
+    try {
+      const selected = await ctx.pickDirectory({ title: 'Choose a legacy persona folder' });
+      if (!selected) return;
+      activeImportAudit = importer.auditImportFolder(selected);
+      ctx.bus.post('personaImportAudit', activeImportAudit);
+    } catch (err) {
+      activeImportAudit = null;
+      ctx.bus.post('personaImportResult', { ok: false, action: 'audit', error: err.message });
+      ctx.bus.post('toast', { text: 'Persona import could not be audited: ' + err.message });
+    }
+  });
+
+  ctx.bus.on('personaImportCreateDraft', (message) => {
+    try {
+      if (!activeImportAudit || !message ||
+          path.resolve(message.sourceFolder || '') !== path.resolve(activeImportAudit.sourceFolder))
+        throw new Error('Choose and audit the import folder again.');
+      if (activeImportAudit.errors.length)
+        throw new Error('Resolve blocking import errors before creating a draft.');
+      const answers = importer.answersFromMapping(activeImportAudit, message.mapping);
+      const workspace = interviewWorkspace(ctx.stateDir);
+      let draft = null;
+      try {
+        draft = drafts.createDraft(ctx.stateDir, workspace, {
+          name: message.name,
+          useCase: message.useCase,
+        });
+        draft = drafts.updateDraft(ctx.stateDir, draft.id, draft.revision, { answers });
+      } catch (err) {
+        if (draft) {
+          try { drafts.deleteDraft(ctx.stateDir, draft.id, workspace); } catch (_) { /* best effort */ }
+        }
+        throw err;
+      }
+      activeImportAudit = null;
+      ctx.bus.post('personaImportResult', { ok: true, action: 'draft-created' });
+      postDraftStatus(draft);
+    } catch (err) {
+      ctx.bus.post('personaImportResult', { ok: false, action: 'create-draft', error: err.message });
+      ctx.bus.post('toast', { text: 'Imported draft was not created: ' + err.message });
+    }
   });
 }
 

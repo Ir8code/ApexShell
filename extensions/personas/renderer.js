@@ -38,6 +38,16 @@
         '<label class="personaFieldLabel" for="personaDraftUseCase">ONE-SENTENCE USE CASE</label>' +
         '<textarea class="personaDraftUseCase" id="personaDraftUseCase" maxlength="240" placeholder="Example: Independently review code changes and return evidence-backed findings."></textarea>' +
         '<button class="personaDraftCreate" type="button" disabled>START INTERVIEW</button>' +
+        '<button class="personaImportChoose" type="button">AUDIT LEGACY PERSONA</button>' +
+        '<section class="personaImportAudit" hidden>' +
+          '<div class="personaInterviewSubhead">READ-ONLY IMPORT AUDIT</div>' +
+          '<div class="personaImportSource"></div>' +
+          '<label class="personaFieldLabel" for="personaImportName">DRAFT NAME</label><input class="personaImportName" id="personaImportName" maxlength="80" />' +
+          '<label class="personaFieldLabel" for="personaImportUseCase">ONE-SENTENCE USE CASE</label><textarea class="personaImportUseCase" id="personaImportUseCase" maxlength="240"></textarea>' +
+          '<div class="personaImportFindings"></div>' +
+          '<div class="personaImportMappings"></div>' +
+          '<button class="personaImportCreate" type="button">CREATE MAPPED DRAFT</button>' +
+        '</section>' +
         '<div class="personaDraftResumeBlock">' +
           '<div class="personaDraftResumeLabel">RESUME A SAVED DRAFT</div>' +
           '<select class="personaDraftSelect" aria-label="Saved persona drafts"></select>' +
@@ -115,6 +125,7 @@
         '<button class="personaCanonicalRestore" type="button">RESTORE SAVED</button>' +
         '<div class="personaSectionRegen"><select class="personaSectionSelect"></select><button class="personaSectionRegenerate" type="button">REGENERATE SECTION</button></div>' +
         '<div class="personaPreviewError personaPreviewReviewError"></div>' +
+        '<div class="personaValidationBlock"><button class="personaValidatePreview" type="button">VALIDATE PREVIEW</button><button class="personaAcceptCanonical" type="button" hidden>ACCEPT MANUAL CANONICAL HASH</button><div class="personaValidationSummary"></div><div class="personaValidationFindings"></div></div>' +
         '<div class="personaInterviewActions"><button class="personaPreviewDrafts" type="button">DRAFTS</button><button class="personaPreviewBack" type="button">BACK TO INTERVIEW</button><button class="personaPreviewRegenerateAll" type="button">REGENERATE ALL</button></div>' +
       '</section>' +
       '<p class="personaBuilderFoot">This setting stays on this Apex installation. Model, provider, credentials, and runtime permissions stay outside the personas you build.</p>' +
@@ -136,6 +147,14 @@
   const draftName = pane.querySelector('.personaDraftName');
   const draftUseCase = pane.querySelector('.personaDraftUseCase');
   const draftCreate = pane.querySelector('.personaDraftCreate');
+  const importChoose = pane.querySelector('.personaImportChoose');
+  const importAudit = pane.querySelector('.personaImportAudit');
+  const importSource = pane.querySelector('.personaImportSource');
+  const importName = pane.querySelector('.personaImportName');
+  const importUseCase = pane.querySelector('.personaImportUseCase');
+  const importFindings = pane.querySelector('.personaImportFindings');
+  const importMappings = pane.querySelector('.personaImportMappings');
+  const importCreate = pane.querySelector('.personaImportCreate');
   const draftSelect = pane.querySelector('.personaDraftSelect');
   const draftResume = pane.querySelector('.personaDraftResume');
   const draftDelete = pane.querySelector('.personaDraftDelete');
@@ -174,6 +193,10 @@
   const previewDrafts = pane.querySelector('.personaPreviewDrafts');
   const previewBack = pane.querySelector('.personaPreviewBack');
   const previewRegenerateAll = pane.querySelector('.personaPreviewRegenerateAll');
+  const validatePreview = pane.querySelector('.personaValidatePreview');
+  const acceptCanonical = pane.querySelector('.personaAcceptCanonical');
+  const validationSummary = pane.querySelector('.personaValidationSummary');
+  const validationFindings = pane.querySelector('.personaValidationFindings');
   const actionCategories = ['read_files', 'edit_files', 'run_commands', 'search_web',
     'use_connectors', 'send_external', 'change_system', 'delete_data'];
   const actionSelects = Object.fromEntries(actionCategories.map((category) =>
@@ -205,6 +228,8 @@
   let previewBusy = false;
   let previewConfirmOverwrite = false;
   let canonicalDirty = false;
+  let activeImportAudit = null;
+  let importMapSelects = [];
 
   function setChoosing(value) {
     choosing = value;
@@ -341,6 +366,7 @@
     draftWarnings.textContent = message.error || (message.warnings || []).join(' · ');
     draftWarnings.dataset.tone = message.error ? 'warning' : 'quiet';
     setStarterState();
+    importAudit.hidden = true;
   }
 
   function fillList(element, items) {
@@ -544,6 +570,9 @@
     previewEditState.dataset.tone = previewBundle.canonicalDrift ? 'warning' : 'good';
     canonicalSave.disabled = true;
     previewReviewError.textContent = '';
+    validationSummary.textContent = '';
+    validationFindings.replaceChildren();
+    acceptCanonical.hidden = true;
     sectionSelect.replaceChildren();
     for (const card of interviewCards) {
       const option = document.createElement('option');
@@ -571,6 +600,74 @@
     canonicalSave.disabled = canonicalPreview.value === (previewBundle && previewBundle.canonical);
   }
 
+  function renderValidationStatus(message) {
+    const report = message.report || { valid: false, errors: [], warnings: [], suggestions: [] };
+    validationSummary.textContent = report.valid
+      ? `VALID · ${report.warnings.length} warning(s) · ${report.suggestions.length} suggestion(s)`
+      : `BLOCKED · ${report.errors.length} error(s) · ${report.warnings.length} warning(s)`;
+    validationSummary.dataset.tone = report.valid ? 'good' : 'warning';
+    validationFindings.replaceChildren();
+    for (const finding of [...report.errors, ...report.warnings, ...report.suggestions]) {
+      const row = document.createElement('div');
+      row.textContent = `${finding.severity.toUpperCase()} · ${finding.message}`;
+      row.dataset.tone = finding.severity;
+      validationFindings.appendChild(row);
+    }
+    acceptCanonical.hidden = !report.warnings.some((finding) => finding.repair === 'accept-canonical');
+  }
+
+  function setImportCreateState() {
+    importCreate.disabled = !activeImportAudit || Boolean(activeImportAudit.errors.length) ||
+      !importName.value.trim() || !importUseCase.value.trim();
+  }
+
+  function renderImportAudit(message) {
+    activeImportAudit = message;
+    importAudit.hidden = false;
+    importSource.textContent = message.canonicalFile;
+    importName.value = message.displayName;
+    importUseCase.value = message.description;
+    importFindings.textContent = [
+      ...(message.errors || []).map((finding) => 'ERROR · ' + finding.message),
+      ...(message.warnings || []).map((finding) => 'WARNING · ' + finding.message),
+    ].join(' · ') || 'No structural import errors. Review every semantic mapping.';
+    importFindings.dataset.tone = message.errors.length ? 'warning' : 'quiet';
+    importMappings.replaceChildren();
+    importMapSelects = [];
+    for (const section of message.sections || []) {
+      const row = document.createElement('div');
+      row.dataset.index = String(section.index);
+      const label = document.createElement('span');
+      label.textContent = section.heading;
+      const select = document.createElement('select');
+      const targets = [{ value: '', label: 'Leave unmapped' },
+        ...interviewCards.map((card) => ({ value: card.key, label: card.title }))];
+      for (const target of targets) {
+        const option = document.createElement('option');
+        option.value = target.value;
+        option.textContent = target.label;
+        select.appendChild(option);
+      }
+      select.value = section.suggestedKey || '';
+      row.appendChild(label);
+      row.appendChild(select);
+      importMappings.appendChild(row);
+      importMapSelects.push({ index: section.index, select });
+    }
+    setImportCreateState();
+  }
+
+  function renderImportResult(result) {
+    if (result.ok) {
+      activeImportAudit = null;
+      importCreate.disabled = true;
+      return;
+    }
+    importFindings.textContent = result.error;
+    importFindings.dataset.tone = 'warning';
+    setImportCreateState();
+  }
+
   ApexBus.on('personaWorkspaceStatus', renderWorkspace);
   ApexBus.on('personaFoundationStatus', renderFoundation);
   ApexBus.on('personaFoundationResult', renderFoundationResult);
@@ -579,6 +676,9 @@
   ApexBus.on('personaDraftResult', renderDraftResult);
   ApexBus.on('personaPreviewStatus', renderPreviewStatus);
   ApexBus.on('personaPreviewResult', renderPreviewResult);
+  ApexBus.on('personaValidationStatus', renderValidationStatus);
+  ApexBus.on('personaImportAudit', renderImportAudit);
+  ApexBus.on('personaImportResult', renderImportResult);
   choose.addEventListener('click', () => {
     if (choosing) return;
     setChoosing(true);
@@ -616,6 +716,20 @@
     ApexBus.post('personaDraftCreate', {
       name: draftName.value,
       useCase: draftUseCase.value,
+    });
+  });
+  importChoose.addEventListener('click', () => ApexBus.post('personaImportChoose', {}));
+  importName.addEventListener('input', setImportCreateState);
+  importUseCase.addEventListener('input', setImportCreateState);
+  importCreate.addEventListener('click', () => {
+    if (importCreate.disabled || !activeImportAudit) return;
+    importCreate.disabled = true;
+    ApexBus.post('personaImportCreateDraft', {
+      sourceFolder: activeImportAudit.sourceFolder,
+      name: importName.value,
+      useCase: importUseCase.value,
+      mapping: Object.fromEntries(importMapSelects.map(({ index, select }) =>
+        [String(index), select.value])),
     });
   });
   draftSelect.addEventListener('change', resetDeleteArm);
@@ -730,6 +844,23 @@
       return;
     }
     ApexBus.post('personaDraftListGet', {});
+  });
+  validatePreview.addEventListener('click', () => {
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or restore the canonical edit before validating.';
+      return;
+    }
+    ApexBus.post('personaPreviewValidate', { id: currentDraft.id });
+  });
+  acceptCanonical.addEventListener('click', () => {
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or restore the canonical edit before accepting its hash.';
+      return;
+    }
+    ApexBus.post('personaPreviewAcceptCanonical', {
+      id: currentDraft.id,
+      expectedRevision: currentDraft.revision,
+    });
   });
 
   ApexShell.registerDockPane(pane, { order: 20 });
