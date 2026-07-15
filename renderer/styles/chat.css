@@ -143,14 +143,15 @@
 .feed * { user-select: text; }
 .permCard .pdetail { user-select: text; }   /* paths */
 
-/* file paths are doors: click → the working view (render or text) */
-.feed a.pathLink {
+/* Paths open the working view; HTTP(S) links open externally only after an
+   explicit click/keyboard activation. The visible web target is never hidden. */
+.feed a.pathLink, .feed a.webLink {
   color: var(--accent);
   text-decoration: none;
   border-bottom: 1px dotted color-mix(in srgb, var(--accent) 55%, transparent);
   cursor: pointer;
 }
-.feed a.pathLink:hover { border-bottom-style: solid; }
+.feed a.pathLink:hover, .feed a.webLink:hover { border-bottom-style: solid; }
 .toolRow .tdetail.pathLink { color: var(--accent); cursor: pointer; }
 .toolRow .tdetail.pathLink:hover { text-decoration: underline dotted; }
 .feed > * { max-width: 860px; margin: 0 auto 10px; }

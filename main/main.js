@@ -17,6 +17,7 @@ const artifacts = require('./artifacts');
 const extensions = require('./extensions');
 const liveUpdate = require('./liveUpdate');
 const usage = require('./usage');
+const { normalizeExternalUrl } = require('./externalUrl');
 
 // apex:// serves local files to the working view's iframe (HTML artifacts) —
 // our own resource policy, replacing VS Code's localResourceRoots wall.
@@ -118,6 +119,12 @@ function createWindow() {
   // local paths only; never URLs (no drive-by external opens from seat text).
   bus.on('openPath', (m) => {
     if (m.path && path.isAbsolute(m.path) && fs.existsSync(m.path)) shell.openPath(m.path);
+  });
+  // Assistant prose is untrusted. Rendering a URL never opens it; only this
+  // explicit-click event crosses to the OS, and only for plain HTTP(S).
+  bus.on('openUrl', (m) => {
+    const url = normalizeExternalUrl(m && m.url);
+    if (url) shell.openExternal(url).catch(() => {});
   });
 
   // Lifecycle log — GUI launches have no visible console; a window that

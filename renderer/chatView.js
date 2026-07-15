@@ -32,12 +32,9 @@ window.ApexChat = (function () {
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   // Markdown-lite over ESCAPED text — fenced code, inline code, bold,
-  // heading lines. Model output never reaches innerHTML unescaped.
-  // Absolute local paths become pathLinks (click → the working view);
-  // linkified on the escaped text, the data-path carries the raw path.
-  const PATH_RE = /[A-Za-z]:[\\\/][^\s`"'<>|*?]+[\w)\]]/g;
-  const linkify = (s) => s.replace(PATH_RE, (p) =>
-    '<a class="pathLink" data-path="' + p.replace(/"/g, '&quot;') + '">' + p + '</a>');
+  // heading lines. Model output never reaches innerHTML unescaped. The shared
+  // linkifier recognizes bounded Windows paths and visible-target HTTP(S).
+  const linkify = (s) => ApexLinkify.linkifyEscaped(s);
   function md(s) {
     const parts = esc(s).split(/```(?:\w*\n)?/);
     let out = '';
@@ -196,14 +193,26 @@ window.ApexChat = (function () {
       c.feed.querySelectorAll('.msg.user').forEach((u) =>
         u.classList.toggle('stuck', u.getBoundingClientRect().top <= top + 1));
     });
-    // path clicks → the working view (render-or-text; read-only, never external)
-    c.feed.addEventListener('click', (e) => {
-      const a = e.target.closest('.pathLink');
-      if (a) {
-        ApexBus.post('artifactOpen', { id: c.id, path: a.dataset.path || a.textContent });
-        // an explicit click IS intent — pull the Viewer tab open for it
-        if (window.ApexShell) ApexShell.openDock('viewer');
+    const activateLink = (target) => {
+      const web = target.closest('.webLink');
+      if (web) {
+        ApexBus.post('openUrl', { url: web.dataset.url || web.textContent });
+        return true;
       }
+      const local = target.closest('.pathLink');
+      if (!local) return false;
+      ApexBus.post('artifactOpen', { id: c.id,
+        path: local.dataset.path || local.textContent });
+      // An explicit click IS intent — pull the Viewer tab open for it.
+      if (window.ApexShell) ApexShell.openDock('viewer');
+      return true;
+    };
+    c.feed.addEventListener('click', (e) => {
+      if (activateLink(e.target)) e.preventDefault();
+    });
+    c.feed.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && activateLink(e.target))
+        e.preventDefault();
     });
 
     // R26: the mode select posts intent; the ENGINE's echo sets the value —
