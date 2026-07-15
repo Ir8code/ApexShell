@@ -1,0 +1,251 @@
+/* Apex — the three-sided shell (ported from the VS Code build, J13/J14).
+   Geometry unchanged; every color now rides a theme token. */
+.stage { position: fixed; inset: 0;
+         display: flex; flex-direction: column;
+         align-items: center; justify-content: center; gap: 14px; }
+.wordmark { font-size: 13px; letter-spacing: .55em; text-indent: .55em;
+            color: var(--dim); font-weight: 600; }
+.hint { font-size: 12px; color: var(--faint); }
+
+/* ---------- TOP: the tracker blind (lives below our title bar) ---------- */
+.trackerWrap { position: fixed; top: var(--title-h); left: 0; right: 0; bottom: 0;
+               z-index: 500; pointer-events: none; }
+.blind { position: absolute; left: 0; right: 0; top: 0; height: 100%;
+         display: flex; flex-direction: column; pointer-events: auto;
+         transition: transform .55s cubic-bezier(.32,.9,.28,1); will-change: transform; }
+.blind.collapsed { transform: translateY(calc(var(--bar-h) - 100%)); }
+.blind.quarter   { transform: translateY(calc(var(--quarter) - 100%)); }
+.blind.full      { transform: translateY(0); }
+.advBand { flex: 1; min-height: 0; overflow-y: auto; background: var(--bg);
+           border-bottom: 1px solid var(--edge); padding: 20px 18px 28px; }
+.advBand .advHead { font-size: 12px; letter-spacing: .4em; text-indent: .4em;
+                    color: var(--dim); font-weight: 600; margin-bottom: 4px; }
+.advBand .advNote { font-size: 11.5px; color: var(--faint); margin-bottom: 16px; }
+.detailBand { height: calc(var(--quarter) - var(--bar-h)); min-height: 0;
+              overflow-y: auto; background: var(--bg); padding: 12px 18px 18px; }
+.trackerBar { height: var(--bar-h); flex: none;
+              display: flex; align-items: center; gap: 14px; padding: 0 14px 0 18px;
+              background: var(--surface); border-bottom: 1px solid var(--edge);
+              border-top: 1px solid var(--edge);
+              /* downward drop + an UPWARD shadow onto the band above, so tiles
+                 scrolling past read as sliding under the bar by design (J34) */
+              box-shadow: 0 6px 24px rgba(0,0,0,.45), 0 -12px 20px -6px rgba(0,0,0,.6);
+              cursor: grab; touch-action: none; }
+.trackerBar:active { cursor: grabbing; }
+/* the APEX wordmark left the bar 2026-07-14 (the operator: it's already in the header) */
+.chips { display: flex; gap: 14px; flex: 1; overflow: hidden; align-items: center; }
+.chip { display: flex; align-items: center; gap: 6px; font-size: 11.5px;
+        color: var(--dim); white-space: nowrap; }
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+.chip.good .dot { background: var(--good); box-shadow: 0 0 6px var(--good); }
+.chip.warning .dot { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.chip.critical .dot { background: var(--critical); box-shadow: 0 0 6px var(--critical); }
+.chip b { color: var(--text); font-weight: 600; font-size: 11.5px; }
+
+/* ---------- SIDES: shared pane chrome ---------- */
+.sideWrap { position: fixed; left: 0; right: 0; bottom: 0;
+            top: calc(var(--title-h) + var(--bar-h));
+            z-index: 400; pointer-events: none; }
+.sidePane { position: absolute; top: 0; bottom: 0; width: 100vw;
+            pointer-events: auto;
+            transition: transform .5s cubic-bezier(.32,.9,.28,1); will-change: transform; }
+.sidePane .paneBody { position: absolute; top: 0; bottom: 0; left: 0;
+                      width: var(--paneW, 100vw); background: var(--bg);
+                      overflow-y: auto; }
+
+/* ---------- LEFT: the dock (folder tabs) ---------- */
+.dockPane { left: 0; }
+/* collapsed sheets go fully invisible AFTER the slide lands — kills the
+   1px edge that flashed over sibling tabs at z-promote (the operator, 2026-07-14) */
+.dockPane .paneBody { visibility: hidden; transition: visibility 0s .55s; }
+.dockPane.open .paneBody { visibility: visible; transition-delay: 0s; }
+.dockPane .paneBody { border-right: 1px solid var(--edge);
+                      box-shadow: 10px 0 30px rgba(0,0,0,.45); padding: 20px 22px;
+                      /* anchor to the pane's RIGHT edge — the dock slides in from
+                         the left, so a left:0 body sits a full screen off-screen
+                         (latent since the port; exposed by the first real tenant,
+                         R29 — the smoke screenshot caught it) */
+                      left: auto; right: 0; }
+.dockTab { position: absolute; left: 100%; width: 34px; height: 92px;
+           border: 1px solid var(--edge); border-left: none;
+           border-radius: 0 10px 10px 0;
+           background: linear-gradient(90deg, var(--surface),
+             color-mix(in srgb, var(--surface) 82%, var(--accent) 8%));
+           color: var(--dim); cursor: grab; touch-action: none;
+           display: flex; align-items: center; justify-content: center;
+           writing-mode: vertical-rl; font-size: 10.5px; letter-spacing: .22em;
+           font-weight: 600; user-select: none;
+           box-shadow: 4px 0 14px rgba(0,0,0,.35); }
+.dockTab:active { cursor: grabbing; }
+/* staggered tab heights (was inline style; strict CSP forbids style attrs) */
+/* tab vertical slots are shell-assigned (order-derived, 104px steps) so
+   extension panes stagger in without CSS edits — see shell.js layoutTabs() */
+/* EVERY dock pane keeps a blank left gutter (the operator's default rule,
+   2026-07-14): collapsed sibling tabs float above open panes by the
+   never-buried law — content must start clear of that strip. */
+.dockPane .paneBody { padding-left: 52px; }
+/* viewer-tab activity dot — something landed while the pane was closed */
+.dockTab .vDot { position: absolute; right: 7px; bottom: 10px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--accent);
+  animation: vDotPulse 1.4s ease-in-out infinite; }
+.dockTab .vDot[hidden] { display: none; }
+@keyframes vDotPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent); }
+  50%      { box-shadow: 0 0 8px 2px color-mix(in srgb, var(--accent) 70%, transparent); }
+}
+/* the viewer pane body — image/page fills the visible sheet (left gutter
+   kept: the never-buried tab strip must not cover rendered content) */
+.viewerPane { display: flex; flex-direction: column; padding: 0 0 0 52px !important; }
+.viewerPane .vwHead { flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-bottom: 1px solid var(--edge);
+  font-size: 11px; color: var(--dim); }
+.viewerPane .vwHead .vwName { flex: 1; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.viewerPane .vwHead button { border: 0; background: none; color: var(--dim);
+  cursor: pointer; font-size: 13px; }
+.viewerPane .vwHead button:hover { color: var(--text); }
+/* width:auto, NOT var(--paneW): the paneBody already sizes to --paneW and
+   carries the 52px tab gutter as padding — an explicit --paneW here pushed
+   the content (and its scrollbar) 52px past the visible edge (the operator,
+   2026-07-14: text off the pane, no scrollbar) */
+.viewerPane .vwBody { flex: 1; overflow: auto; display: flex; min-width: 0; }
+.viewerPane .vwBody img { max-width: 100%; max-height: 100%; margin: auto;
+  object-fit: contain; }
+.viewerPane .vwBody iframe { flex: 1; border: 0; background: #fff; }
+.viewerPane .vwBody pre { flex: 1; margin: 0; padding: 10px; overflow: auto;
+  font: 11px/1.5 Consolas, monospace; color: var(--dim); white-space: pre-wrap; }
+.viewerPane .vwBody .paneNote { margin: auto; max-width: 320px; }
+/* built-in terminal dock - same tab-safe gutter as Viewer, with the shell
+   filling the pane instead of living as a central AI-seat tab */
+.terminalPane { display: flex; flex-direction: column; overflow: hidden !important;
+  padding: 0 0 0 52px !important; }
+.terminalPane .tdHead { flex: none; display: flex; align-items: center; gap: 9px;
+  padding: 8px 12px; border-bottom: 1px solid var(--edge);
+  font-size: 11px; color: var(--dim); }
+.terminalPane .tdName { color: var(--text); }
+.terminalPane .tdStatus { flex: 1; color: var(--faint); }
+.terminalPane .tdNew { border: 1px solid var(--edge); border-radius: 3px;
+  padding: 2px 8px; background: var(--surface); color: var(--dim);
+  font: 10px/1.5 inherit; letter-spacing: .12em; cursor: pointer; }
+.terminalPane .tdNew:hover { color: var(--text); border-color: var(--accent); }
+.terminalPane .termMount { margin: 8px 12px 12px; }
+.dockTab:hover { color: var(--text); border-color: var(--accent); }
+.dockPane.open .dockTab { color: var(--accent); }
+
+/* pipeline-tab styles moved to extensions/apex-pipeline/style.css (R32) */
+.paneTitle { font-size: 12px; letter-spacing: .4em; text-indent: .4em;
+             color: var(--dim); font-weight: 600; margin-bottom: 6px; }
+.paneNote { font-size: 11.5px; color: var(--faint); max-width: 480px; line-height: 1.6; }
+
+/* ---------- RIGHT: the AI bar ---------- */
+/* --uprog = how open the pane is (0 collapsed → 1 quarter+). The DRAG writes
+   it inline every move (shell.js setLive), so the whole usage choreography
+   scrubs with the hand — one fluid animation from the grab (the operator,
+   2026-07-14). Registered so the snap/click path can TRANSITION it from
+   wherever the hand let go. */
+@property --uprog { syntax: '<number>'; inherits: true; initial-value: 0; }
+.aiPane { left: 0; --uprog: 0;
+          transition: transform .5s cubic-bezier(.32,.9,.28,1),
+                      --uprog .5s cubic-bezier(.32,.9,.28,1); }
+.aiPane.open { --uprog: 1; }
+.aiPane .paneBody { left: var(--bar-h); border-left: 1px solid var(--edge);
+                    box-shadow: -10px 0 30px rgba(0,0,0,.45); padding: 20px 22px;
+                    display: flex; flex-direction: column; }
+/* usage pinned to the pane BOTTOM — rows sit level with the rail's compact
+   units (the operator, 2026-07-14). The block itself is STATIC; only the Claude and
+   Codex rows animate (the operator's second look: the whole-block rise read as the
+   old trackers floating up, and agy/qwen stay put for now) */
+.usageBlock { margin-top: auto; padding-top: 16px;
+              /* pull past the pane's 20px bottom padding so the Claude row's
+                 bars center on its glyph (27px from the bottom edge) */
+              margin-bottom: -14px; }
+/* Claude/Codex rows come OUT of the rail's circle icons (the operator, 2026-07-14):
+   the rail sits at the open pane's LEFT edge, so the row slides in from the
+   icon side and its horizontal bars GROW left → right from zero, like the
+   icon is extruding them — all scrubbed by --uprog (no timers; the hand or
+   the snap transition drives it). Rows pair the rail order (Codex above,
+   Claude bottom). */
+.usageRow {
+  opacity: clamp(0, calc((var(--uprog) - .45) / .35), 1);
+  transform: translateX(calc(-18px * (1 - clamp(0, calc((var(--uprog) - .45) / .35), 1))));
+}
+.usageRow .hbar { transform-origin: left;
+                  transform: scaleX(clamp(0, calc((var(--uprog) - .55) / .45), 1)); }
+.aiRail { position: absolute; left: 0; top: 0; bottom: 0; width: var(--bar-h);
+          background: var(--surface); border-left: 1px solid var(--edge);
+          cursor: grab; touch-action: none;
+          display: flex; flex-direction: column; align-items: center;
+          padding: 12px 0; gap: 10px;
+          box-shadow: -6px 0 24px rgba(0,0,0,.45); }
+.aiRail:active { cursor: grabbing; }
+/* —— usage trackers (2026-07-13, the operator's spec): subscription models on the
+   collapsed rail, Claude anchored to the bottom, next model above it. Bars
+   fill with USED %, both providers, one direction — Codex's own UI drains
+   instead; we don't copy that. Widget draft: resident Qwen, offload row #10. */
+.railUsage { margin-top: auto; display: flex; flex-direction: column;
+             /* bottom padding pins the glyph latitudes — raised 4→12px to
+                meet the quarter rows' bars (the operator's screenshot, 2026-07-14) */
+             gap: 12px; padding-bottom: 12px; }
+.usageUnit { display: flex; flex-direction: column; align-items: center;
+             width: 30px; gap: 3px; cursor: default; }
+.usageUnit .ubars { display: flex; flex-direction: row; gap: 3px;
+                    align-items: flex-end; height: 26px;
+                    /* transform, NOT height: the box keeps its space so the
+                       glyphs never shift (the operator: "the buttons move") */
+                    transform-origin: bottom;
+                    /* everything below DERIVES from --uprog — the drag scrubs
+                       it, the snap transitions it; no per-element timers.
+                       Stage ranges of the one scrub:
+                       bars drain 0→.45 · glyph swells .35→.65 ·
+                       rows arrive .45→.8 · big bars grow .55→1 */
+                    transform: scaleY(clamp(0, calc(1 - var(--uprog) / .45), 1));
+                    opacity: clamp(0, calc(1 - var(--uprog) / .45), 1); }
+.usageUnit .uglyph { transition: color .15s, border-color .15s;
+                     transform: scale(calc(1 + .2 *
+                       clamp(0, calc((var(--uprog) - .35) / .3), 1))); }
+.usageUnit .ubar { width: 8px; height: 26px; border-radius: 2px; position: relative;
+                   overflow: hidden;
+                   /* solid track — the 60%-mix read as invisible (the operator, 2026-07-14) */
+                   background: var(--edge); }
+.usageUnit .ubar .ufill { position: absolute; bottom: 0; left: 0; right: 0;
+                          height: 0%; background: var(--accent); border-radius: 2px;
+                          transition: height .4s ease; }
+.usageUnit .ubar.warn .ufill { background: var(--warning); }
+.usageUnit .ubar.crit .ufill { background: var(--critical); }
+.usageUnit .ubar.nodata { opacity: .5; }
+.usageUnit.stale { opacity: .45; }
+.usageUnit .uglyph { width: 22px; height: 22px; border-radius: 50%;
+                     border: 1px solid var(--edge);
+                     /* 10px read as identical dots (the operator) — the mark fills
+                        the circle now */
+                     font-size: 15px; color: var(--dim);
+                     display: flex; align-items: center; justify-content: center;
+                     background: var(--surface); }
+.usageUnit:hover .uglyph { color: var(--text); border-color: var(--accent); }
+/* quarter-view list rows — HORIZONTAL bars (the operator, 2026-07-14: the wide row
+   is the space, use it); session bar above, weekly under */
+.usageRow { display: block; padding: 7px 0;
+            /* fixed to the rail's glyph pitch (unit 51px + gap 12): with the
+               block's -14px pull-down, each paired row's BARS land on its
+               icon's latitude — Claude bars ≈27px up, Codex ≈90px (the operator,
+               2026-07-14: Claude didn't line up) */
+            height: 63px; box-sizing: border-box; overflow: hidden;
+            border-bottom: 1px solid color-mix(in srgb, var(--edge) 40%, transparent); }
+.usageRow .urTop { display: flex; align-items: center; gap: 10px; margin-bottom: 5px; }
+.usageRow .uname { flex: 1; font-size: 12px; color: var(--text); }
+.usageRow .utext { font-size: 11px; color: var(--dim); white-space: nowrap; }
+.usageRow.stale { opacity: .5; }
+.hbar { height: 5px; border-radius: 3px; margin: 4px 0; overflow: hidden;
+        background: color-mix(in srgb, var(--edge) 55%, transparent); }
+.hbar[hidden] { display: none; }
+.hbar i { display: block; height: 100%; width: 0%; background: var(--accent);
+          border-radius: 3px; transition: width .4s ease; }
+.hbar.warn i { background: var(--warning); }
+.hbar.crit i { background: var(--critical); }
+.railBtn { width: 28px; height: 28px; border-radius: 50%; flex: none;
+           border: 1px solid var(--edge);
+           background: color-mix(in srgb, var(--accent) 12%, transparent);
+           color: var(--text); font-size: 12px; font-weight: 600;
+           cursor: pointer; line-height: 1; }
+.railBtn:hover { border-color: var(--accent);
+                 box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 35%, transparent); }

@@ -1,0 +1,462 @@
+/* Apex — chat center (Phase 2, the operator's ruling 2026-07-12): looks and reads
+   like the official Claude panel — ONE column, top-down document flow, no
+   left/right bubbles. The status strip above the composer always says
+   exactly what's happening: your turn / working / WAITING ON YOU / ended. */
+
+#chatArea {
+  position: fixed;
+  top: calc(34px + 40px);          /* our title bar + tracker bar */
+  bottom: 0;
+  left: 40px;                       /* dock tab rack */
+  right: 44px;                      /* AI rail */
+  display: flex;
+  flex-direction: column;
+  z-index: 10;                      /* under every blind (400+) */
+}
+#chatArea[hidden] { display: none; }
+
+/* ---- slim chat tabs ---- */
+#chatTabs {
+  display: flex;
+  gap: 2px;
+  padding: 6px 10px 0 18px;   /* first tab starts past the shelf's fade-in */
+  flex: none;
+  overflow-x: auto;
+}
+.chatTab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chatTab .t { overflow: hidden; text-overflow: ellipsis; }
+/* active = brighter text + a faint tint, NOT an accent outline (the operator, 2026-07-13) */
+.chatTab.active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+}
+.chatTab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.chatTab .dot.live { background: var(--good); }
+.chatTab .dot.busy { background: var(--warning); }
+.chatTab .dot.perm { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
+.chatTab .dot.dead { background: var(--critical); }
+.chatTab .x { border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 11px; padding: 0 2px; }
+.chatTab .x:hover { color: var(--critical); }
+
+/* ---- chat body: feed column + working view ---- */
+/* the tab shelf: its hard 1px terminus used to chop off mid-air beside the
+   dock rack — the "rough corner" (the operator, 2026-07-14). The line now dissolves
+   at both ends instead of ending. */
+#chatMain { flex: 1; display: flex; min-height: 0; position: relative; }
+#chatMain::before {
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--edge) 16px,
+              var(--edge) calc(100% - 16px), transparent);
+  pointer-events: none; z-index: 1;
+}
+.chatWrap { flex: 1; display: flex; min-width: 0; min-height: 0; }
+.chatWrap[hidden] { display: none; }
+.chatCol { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+/* (the chat header retired 2026-07-14 — the tab carries the title; End
+   Session lives at the tab row's far right, away from the composer) */
+#chatTabs #endBtn {
+  margin-left: auto;
+  align-self: center;
+  border: 1px solid var(--edge); background: none; color: var(--dim);
+  font-size: 11px; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  white-space: nowrap; flex: none;
+}
+#chatTabs #endBtn:hover { color: var(--text); border-color: var(--accent); }
+/* context meter — the divider above the input, colors only (numbers pinned in
+   the ctxTop row above): fill = window used; accent → warning ≥65% → critical ≥85% */
+.ctxBar {
+  flex: none;
+  position: relative;               /* anchors the hover label */
+  width: min(860px, 100% - 28px);
+  margin: 0 auto;
+  height: 4px;
+  background: var(--edge);
+  border-left: 1px solid var(--edge);
+  border-right: 1px solid var(--edge);
+  cursor: default;
+}
+.ctxBar .fill {
+  height: 100%; width: 0;
+  /* muted fill — the meter should inform, not headline (the operator, 2026-07-14) */
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+  transition: width .5s ease, background .5s ease;
+}
+.ctxBar.warn .fill { background: color-mix(in srgb, var(--warning) 70%, transparent); }
+.ctxBar.hot  .fill { background: var(--critical); box-shadow: 0 0 6px var(--critical); }
+/* the pinned numbers + dials group — RIGHT SIDE OF THE STATUS ROW (the operator's
+   third dial-in, 2026-07-14: status text, context pill and dials share ONE row) */
+.ctxTop {
+  display: flex; align-items: center; gap: 8px;
+  margin-left: auto;
+  flex: none;
+}
+.ctxTop[hidden] { display: none; }
+.ctxTop .dials { display: flex; gap: 4px; }
+.ctxTop .dials[hidden] { display: none; }
+.ctxTop .dials select {
+  background: var(--surface); color: var(--dim);
+  border: 1px solid var(--edge); border-radius: 4px;
+  font-size: 10.5px; padding: 1px 4px; outline: none; cursor: pointer;
+  max-width: 110px;
+}
+.ctxTop .dials select:hover { color: var(--text); }
+.ctxTop .dials select:disabled { opacity: .38; cursor: default; }
+.ctxTop .dials select.mode.risky { color: var(--warning); border-color: var(--warning); font-weight: 600; }
+.ctxTop .lbl {
+  font-size: 10px; white-space: nowrap;
+  color: var(--faint);
+  border: 1px solid var(--edge); border-radius: 3px;
+  padding: 1px 7px;
+}
+.ctxTop .lbl:empty { display: none; }   /* no data yet = no empty stub pill */
+.ctxTop.warn .lbl { color: var(--warning); }
+.ctxTop.hot  .lbl { color: var(--critical); }
+/* hover = readable (the operator, 2026-07-14): the faint pill text brightens; keep
+   this AFTER the warn/hot rules so hover wins in those states too */
+.ctxTop .lbl:hover { color: var(--text); border-color: var(--accent); }
+/* focus ring: the global policy in base.css (J57) covers every control */
+
+/* ---- the feed: one column, document flow (the official-panel read) ---- */
+.feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  user-select: text;          /* the shell is select-none; chat content isn't chrome */
+}
+.feed * { user-select: text; }
+.permCard .pdetail { user-select: text; }   /* paths */
+
+/* file paths are doors: click → the working view (render or text) */
+.feed a.pathLink {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted color-mix(in srgb, var(--accent) 55%, transparent);
+  cursor: pointer;
+}
+.feed a.pathLink:hover { border-bottom-style: solid; }
+.toolRow .tdetail.pathLink { color: var(--accent); cursor: pointer; }
+.toolRow .tdetail.pathLink:hover { text-decoration: underline dotted; }
+.feed > * { max-width: 860px; margin: 0 auto 10px; }
+
+.msg.user {
+  color: var(--text);
+  /* every bubble anchors its own chevron — without this, only the sticky LAST
+     message was a positioning context, and earlier messages' absolute .mExp
+     buttons escaped to the top-right of the whole chat (the operator, 2026-07-13:
+     a stranded "useless" Show-full-message button above End Session) */
+  position: relative;
+  /* opaque (accent tinted over --bg, not transparent): this bubble PINS to the
+     feed top while the reply streams — content must not ghost through it */
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+  border-left: 2px solid var(--accent);
+  border-radius: 4px;
+  padding: 7px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* the last thing the operator said stays visible while the answer scrolls (the
+   VS Code panel behavior). ONLY the last user message pins — sticky on every
+   user bubble turned a reloaded transcript into a parade of pinned history
+   (the operator, 2026-07-13, first replayed feed). :has() = "no later user message
+   follows me", so backfill/replay needs no JS bookkeeping. */
+.feed > .msg.user:not(:has(~ .msg.user)) {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+}
+.msg.user.stuck {   /* pinned right now — lift it off the content sliding under */
+  box-shadow: 0 5px 14px rgba(0,0,0,.5);
+}
+/* long messages collapse to 3 lines (the VS Code pattern) — expanded is the
+   operator's explicit choice via the chevron. Collapsed is also what pins. */
+.msg.user .btxt { padding-right: 22px; }   /* clear of the chevron */
+.msg.user.clamp .btxt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.msg.user .mExp {
+  position: absolute; top: 4px; right: 4px;
+  border: none; background: none; color: var(--dim);
+  font-size: 12px; cursor: pointer; padding: 2px 5px; border-radius: 3px;
+}
+.msg.user .mExp:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.msg.user .who { color: var(--accent); font-weight: 700; margin-right: 6px; }
+
+.msg.ai {
+  color: var(--text);
+  padding: 0 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg.ai code {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+}
+.msg.ai pre {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  padding: 9px 12px;
+  overflow-x: auto;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  white-space: pre;
+}
+.msg.ai b { color: var(--text); }
+
+/* tool rows — the ⏺ lines the official panel shows */
+.toolRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+  font-family: Consolas, monospace;
+  padding: 1px 2px;
+}
+.toolRow .tdot { color: var(--accent); }
+.toolRow.running .tdot { animation: toolPulse 1s ease-in-out infinite; }
+.toolRow .tname { color: var(--text); font-weight: 600; }
+.toolRow .tdetail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); }
+@keyframes toolPulse { 50% { opacity: .25; } }
+
+/* attached image thumbs on user messages */
+.msg.user .thumbs { display: flex; gap: 6px; margin-top: 6px; }
+.msg.user .thumbs img { max-height: 72px; border-radius: 4px; border: 1px solid var(--edge); }
+
+/* ---- THE STATUS STRIP — never guess what the seat is doing ---- */
+.statusStrip {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* strip + perm card + composer share the feed text's column (860px cap) —
+     a full-window input reads obnoxiously wide (the operator) */
+  width: min(860px, 100% - 28px);
+  margin: 0 auto;
+  padding: 6px 12px;
+  border: 1px solid var(--edge);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+  background: var(--surface);
+}
+.statusStrip .sdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--good); }
+/* one row, always: long status text truncates instead of wrapping under the dials */
+.statusStrip .stext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.statusStrip.working { color: var(--text); }
+.statusStrip.working .sdot { background: var(--accent); animation: toolPulse 1s ease-in-out infinite; }
+.statusStrip.perm {
+  color: var(--warning);
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 9%, var(--surface));
+  font-weight: 600;
+}
+.statusStrip.perm .sdot { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+.statusStrip.dead { color: var(--critical); }
+.statusStrip.dead .sdot { background: var(--critical); }
+.statusStrip .elapsed { color: var(--faint); font-weight: 400; }
+.statusStrip .hint { color: var(--faint); font-weight: 400; font-size: 11px; }
+
+/* ---- inline permission card (in flow, not a modal-over-everything) ---- */
+.permCard {
+  flex: none;
+  width: min(860px, 100% - 28px);
+  margin: 0 auto;
+  border: 1px solid var(--warning);
+  border-top: none;
+  background: color-mix(in srgb, var(--warning) 6%, var(--surface));
+  padding: 9px 12px;
+  font-size: 12px;
+}
+.permCard[hidden] { display: none; }
+.permCard .ptool { color: var(--text); font-weight: 700; }
+.permCard .pdetail { font-family: Consolas, monospace; color: var(--dim); margin: 3px 0; word-break: break-all; }
+.permCard .pdesc { color: var(--dim); margin-bottom: 7px; }
+.permCard .pmore { color: var(--warning); font-size: 11px; margin-left: 8px; }
+.permCard button {
+  border: 1px solid var(--edge); background: var(--surface); color: var(--text);
+  font-size: 12px; padding: 4px 14px; border-radius: 4px; cursor: pointer; margin-right: 8px;
+}
+.permCard button.allow { border-color: var(--good); color: var(--good); }
+.permCard button.deny { border-color: var(--critical); color: var(--critical); }
+/* "always" grants a standing rule, not one call — amber, like the risky modes */
+.permCard button.always { border-color: var(--warning); color: var(--warning); }
+.permCard button:hover { filter: brightness(1.25); }
+
+/* —— AskUserQuestion: a question, not a gate ——
+   The permission card is amber because a tool grant carries risk. Being ASKED
+   something carries none — it wears the accent instead, so the eye doesn't read
+   "danger" when a seat simply wants a decision. */
+.permCard.question { border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.permCard.question .ptool { color: var(--accent); letter-spacing: .06em; text-transform: uppercase;
+  font-size: 10.5px; }
+/* Multi-question = TABS, not a scroll of stacked questions (the operator, 2026-07-13:
+   "each question is a tab inside the question box"). A ✓ on a tab says it's
+   answered, so what's still owed is visible without clicking through. */
+.permCard .qtabs { display: flex; gap: 2px; margin: 8px 0 0;
+  border-bottom: 1px solid var(--edge); }
+.permCard .qtab { margin: 0; padding: 5px 12px; border: 1px solid transparent;
+  border-bottom: none; border-radius: 7px 7px 0 0; background: transparent;
+  color: var(--dim); font-size: 11.5px; cursor: pointer; position: relative; top: 1px; }
+.permCard .qtab:hover { color: var(--text); filter: none; }
+.permCard .qtab.active { color: var(--text); border-color: var(--edge);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.permCard .qtab.done::after { content: " ✓"; color: var(--good); }
+.permCard .qblock[hidden] { display: none; }
+.permCard .qblock { margin: 8px 0 12px; }
+.permCard .qtext { color: var(--text); font-size: 12.5px; margin-bottom: 7px; }
+.permCard .qopt { display: flex; align-items: flex-start; gap: 9px; padding: 6px 8px;
+  border: 1px solid var(--edge); border-radius: 7px; margin-bottom: 5px; cursor: pointer; }
+.permCard .qopt:hover { border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.permCard .qopt input { margin-top: 2px; accent-color: var(--accent); cursor: pointer; }
+.permCard .qoptLabel { color: var(--text); }
+.permCard .qoptDesc { color: var(--dim); font-size: 11px; margin-top: 2px; }
+.permCard .qother { width: 100%; margin-top: 4px; padding: 6px 8px; border-radius: 7px;
+  border: 1px dashed var(--edge); background: transparent; color: var(--text);
+  font: inherit; font-size: 12px; outline: none; }
+.permCard .qother:focus { border-color: var(--accent); border-style: solid; }
+.permCard button.allow:disabled { opacity: .4; cursor: default; filter: none; }
+
+/* ---- composer ---- */
+.composer {
+  flex: none;
+  width: min(860px, 100% - 28px);
+  margin: 0 auto 12px;
+  border: 1px solid var(--edge);
+  border-top: none;                /* the ctxBar above IS the divider now */
+  border-radius: 0 0 6px 6px;
+  background: var(--surface);
+  padding: 8px 10px;
+}
+.composer textarea {
+  flex: 1;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: 13px/1.5 inherit;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  min-height: 44px;      /* room to breathe (the operator: Send made it feel tight) */
+  max-height: 180px;
+}
+.composer .stage-row { display: flex; gap: 6px; margin-bottom: 6px; }
+.composer .stage-row:empty { display: none; }
+.composer .stagedImg { position: relative; }
+.composer .stagedImg img { height: 46px; border-radius: 4px; border: 1px solid var(--edge); }
+.composer .stagedImg button {
+  position: absolute; top: -6px; right: -6px;
+  width: 16px; height: 16px; line-height: 13px; font-size: 10px;
+  border-radius: 50%; border: 1px solid var(--edge);
+  background: var(--bg); color: var(--critical); cursor: pointer; padding: 0;
+}
+.composer .crow { display: flex; align-items: flex-end; gap: 10px; }
+.composer .csend {
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text); font-size: 12px; padding: 4px 14px;
+  border-radius: 4px; cursor: pointer; flex: none;
+  margin-bottom: 3px;    /* inline at the field's right, out of the text's way */
+}
+.composer .csend:disabled { opacity: .4; cursor: default; }
+
+/* ---- PTY terminal mount (R25) ---- */
+/* the focus ring answers "is my keyboard in the terminal?" (the operator) */
+.termMount {
+  flex: 1; min-height: 0; padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--edge);
+  border-radius: 4px;
+  margin: 8px 10px 10px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.termMount:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.termMount .xterm { height: 100%; }
+
+/* (the working view moved to the VIEWER dock tab, 2026-07-13 — shell.css) */
+
+/* ---- rail dropdown (active chats + history per persona) ---- */
+#railMenu {
+  position: fixed;
+  z-index: 470;
+  min-width: 230px;
+  max-width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.5);
+  padding: 5px;
+  font-size: 12px;
+}
+#railMenu[hidden] { display: none; }
+#railMenu .rmHead { color: var(--faint); font-size: 10px; letter-spacing: .1em; padding: 4px 8px 2px; }
+#railMenu button {
+  display: block; width: 100%; text-align: left;
+  border: 0; background: none; color: var(--dim);
+  padding: 5px 8px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#railMenu button:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); }
+
+/* Safe-quit armed state (menu) */
+#appMenu button.warn { color: var(--warning); font-weight: 600; }
+
+/* (R26 dials live in .ctxTop above the context bar — styles up beside it) */
+
+/* ---- AI-bar defaults panel ---- */
+/* aligned three-column rows: LABEL | control | default hint — the old
+   inline-flex rows read ragged (the operator, 2026-07-14: "disorganized") */
+#seatCfg { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; font-size: 12px; }
+#seatCfg label { display: grid; grid-template-columns: 84px 176px 1fr;
+                 align-items: center; gap: 0 10px; color: var(--dim); }
+#seatCfg .cfgLbl { text-align: right; font-size: 10px; letter-spacing: .14em;
+                   text-transform: uppercase; color: var(--faint); }
+#seatCfg .cfgSep { border-top: 1px solid var(--edge); margin: 3px 0; }
+#seatCfg select {
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 4px;
+  font-size: 12px; padding: 3px 6px; outline: none; cursor: pointer; width: 100%;
+}
+#seatCfg select.risky { color: var(--warning); border-color: var(--warning); font-weight: 600; }
+#seatCfg .cfgEff { color: var(--faint); font-size: 10px; white-space: nowrap;
+                   overflow: hidden; text-overflow: ellipsis; }
+/* buttons align under the control column, not the labels */
+#seatCfg .cfgBtns { display: flex; gap: 8px; margin-top: 4px; margin-left: 94px; }
+#seatCfg .cfgBtns button {
+  border: 1px solid var(--edge); background: var(--surface); color: var(--dim);
+  font-size: 11px; padding: 4px 10px; border-radius: 4px; cursor: pointer;
+}
+#seatCfg .cfgBtns button:hover { color: var(--text); border-color: var(--accent); }
+
+#seatCfg select:disabled { opacity: .38; cursor: default; }

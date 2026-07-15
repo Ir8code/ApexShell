@@ -1,0 +1,69 @@
+// Apex — the working view's data plane (J17/J18/J19, app-level; the engine
+// only emits artifactCandidate). One artifact per seat (the most recent
+// write/visual read); fs.watch with a 300ms debounce live-refreshes it.
+// Images ship as data: URIs (render from ANY path — the J19 lesson); HTML
+// ships as an apex:// URL for the iframe (the localResourceRoots wall,
+// retired on our terms — plan §3); everything else as capped text.
+'use strict';
+
+const fs = require('fs');
+const bus = require('./bus');
+
+const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+const isHtml = (e) => e === 'html' || e === 'htm';
+
+const current = new Map();   // seatId -> { path, watcher, t }
+
+function show(id, p) {
+  const ext = (p.split('.').pop() || '').toLowerCase();
+  const m = { id, path: p, v: Date.now(),
+              name: p.split(/[\\/]/).pop(),
+              kind: IMG_EXT.has(ext) ? 'img' : isHtml(ext) ? 'html' : 'text' };
+  if (m.kind === 'text') {
+    try {
+      let t = fs.readFileSync(p, 'utf8');
+      if (t.length > 100000) t = t.slice(0, 100000) + '\n…[truncated]';
+      m.text = t;
+    } catch (e) { m.text = '(not readable yet: ' + e.message + ')'; }
+  } else if (m.kind === 'img') {
+    try {
+      const buf = fs.readFileSync(p);
+      if (buf.length > 12 * 1024 * 1024) {
+        m.kind = 'text';
+        m.text = '(image too large for the viewer: ' + Math.round(buf.length / 1048576) + ' MB — use ↗ to open it)';
+      } else {
+        const mt = ext === 'svg' ? 'image/svg+xml' : ext === 'jpg' ? 'image/jpeg' : 'image/' + ext;
+        m.uri = 'data:' + mt + ';base64,' + buf.toString('base64');
+      }
+    } catch (e) { m.kind = 'text'; m.text = '(not readable yet: ' + e.message + ')'; }
+  } else {
+    // apex://local/<encoded absolute path> — resolved by the protocol handler
+    m.uri = 'apex://local/' + encodeURIComponent(p);
+  }
+  bus.post('artifact', m);
+}
+
+function candidate(id, p) {
+  show(id, p);
+  const cur = current.get(id);
+  if (cur && cur.path === p && cur.watcher) return;   // already watching
+  if (cur && cur.watcher) try { cur.watcher.close(); } catch { /* gone */ }
+  const entry = { path: p, watcher: null, t: null };
+  current.set(id, entry);
+  try {
+    entry.watcher = fs.watch(p, () => {   // debounced live refresh
+      clearTimeout(entry.t);
+      entry.t = setTimeout(() => show(id, p), 300);
+    });
+  } catch { /* file may not exist yet (denied Write) — fail-safe, no watcher */ }
+}
+
+function seatClosed(id) {
+  const cur = current.get(id);
+  if (cur && cur.watcher) try { cur.watcher.close(); } catch { /* gone */ }
+  current.delete(id);
+}
+
+function dispose() { for (const id of [...current.keys()]) seatClosed(id); }
+
+module.exports = { candidate, seatClosed, dispose };

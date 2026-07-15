@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- style-src needs 'unsafe-inline': xterm's renderer injects its cursor/
+     selection rules as a runtime style element — strict style-src silently
+     ate the terminal cursor (2026-07-12). script-src stays 'self'. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: apex:; frame-src apex:">
+<title>Apex</title>
+<link rel="stylesheet" href="styles/base.css">
+<link rel="stylesheet" href="styles/shell.css">
+<link rel="stylesheet" href="styles/monitors.css">
+<link rel="stylesheet" href="styles/chat.css">
+<link rel="stylesheet" href="lib/xterm/xterm.css">
+<link rel="stylesheet" href="styles/theme.css">
+</head>
+<body>
+
+<!-- our title bar -->
+<div id="titlebar">
+  <span class="brand">APEX</span>
+  <div id="caption">
+    <button id="codeBadge" type="button" hidden></button>
+    <button id="btnMenu" title="Menu" aria-haspopup="menu" aria-expanded="false">&#9776;</button>
+    <button id="btnMin" title="Minimize">&#x2500;</button>
+    <button id="btnMax" title="Maximize">&#x25A1;</button>
+    <button id="btnClose" class="close" title="Close">&#x2715;</button>
+  </div>
+</div>
+<div id="appMenu" role="menu" aria-label="Apex menu">
+  <div class="menuHead">
+    <span class="menuKicker">APEX</span>
+    <span>Window controls</span>
+  </div>
+  <div class="menuGroup">
+    <button id="menuTheme" class="menuItem" role="menuitem">
+      <span class="menuIcon">&#9670;</span><span>Theme</span>
+    </button>
+    <button id="menuBackground" class="menuItem" role="menuitem">
+      <span class="menuIcon">&#9641;</span><span>Stage background</span>
+    </button>
+    <button id="menuFullscreen" class="menuItem" role="menuitem">
+      <span class="menuIcon">&#x26F6;</span><span class="menuLabel">Fullscreen</span>
+    </button>
+  </div>
+  <div class="sep"></div>
+  <div class="menuGroup">
+    <button id="menuReload" class="menuItem" role="menuitem">
+      <span class="menuIcon">&#8635;</span><span>Reload window</span>
+    </button>
+    <button id="menuRestart" class="menuItem" role="menuitem">
+      <span class="menuIcon">&#10227;</span><span class="menuLabel">Update &amp; restart</span>
+    </button>
+  </div>
+</div>
+<div id="themePanel"></div>
+<div id="backgroundPanel"></div>
+<div id="toast"></div>
+
+<!-- the stage -->
+<div class="stage">
+  <div class="stageBackground" aria-hidden="true"></div>
+  <div class="wordmark">APEX</div>
+  <div class="hint">blinds on three sides &#183; &#9776; for theme &amp; window</div>
+</div>
+
+<!-- LEFT dock + RIGHT AI bar -->
+<div class="sideWrap">
+  <div class="sidePane dockPane" id="dock-viewer" data-tab="viewer" data-order="10">
+    <div class="paneBody viewerPane">
+      <div class="vwHead"><span class="vwName">nothing shown yet</span>
+        <button class="vwOpen" title="Open with the system app">&#8599;</button></div>
+      <div class="vwBody"><div class="paneNote">The seats' show-and-tell surface &#8212;
+        images and pages a chat reads, writes, or wants you to see render here.
+        The tab dot pulses when something new lands.</div></div>
+    </div>
+    <div class="dockTab" data-tab="viewer">VIEWER<span class="vDot" hidden></span></div>
+  </div>
+  <!-- Built-in base-shell terminal. The PIPELINE pane is extension-owned and
+       registers itself later (extensions/apex-pipeline/renderer.js). -->
+  <div class="sidePane dockPane" id="dock-terminal" data-tab="terminal" data-order="15">
+    <div class="paneBody terminalPane">
+      <div class="tdHead">
+        <span class="tdName">Terminal</span>
+        <span class="tdStatus">opens on first pull</span>
+        <button class="tdNew" type="button" title="Close this shell and start a new terminal">NEW</button>
+      </div>
+      <div class="termMount"></div>
+    </div>
+    <div class="dockTab" data-tab="terminal">TERMINAL</div>
+  </div>
+
+  <div class="sidePane aiPane" id="aiPane">
+    <div class="aiRail" id="aiRail">
+      <!-- preset seat buttons are extension-registered (seatPresets → chatView);
+           the blank + seat is the shell's own -->
+      <button class="railBtn" data-persona="" title="New chat - blank seat — double-click">+</button>
+      <div class="railUsage" id="railUsage"></div>
+    </div>
+    <div class="paneBody">
+      <div class="paneTitle">AI &#8212; seat defaults</div>
+      <div id="seatCfg"></div>
+      <div class="paneNote">These are LAUNCH values &#8212; they apply to the next
+        chat you open. A running chat's dials live in the row above its input.</div>
+      <!-- usage pinned to the BOTTOM so the rows sit level with the rail's
+           compact units (the operator, 2026-07-14); it rises from the glyphs' level
+           when the pane opens -->
+      <div class="usageBlock" id="usageBlock">
+        <div class="paneTitle">USAGE &#8212; provider numbers, filled = used</div>
+        <div id="usageList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TOP tracker blind -->
+<div class="trackerWrap">
+  <div class="blind collapsed" id="blind">
+    <div class="advBand">
+    <div class="advHead">CONTROL CENTER</div>
+    <div class="advNote">advanced mode &#8212; the full monitor grid for this installation</div>
+      <div id="fullGrid"></div>
+    </div>
+    <div class="detailBand"><div id="detailGrid"></div></div>
+    <div class="trackerBar" id="trackerBar" title="Apex Tracker - click for quarter, drag to pull">
+      <div class="chips" id="chips"></div>
+    </div>
+  </div>
+</div>
+
+<script src="bus.js"></script>
+<script src="theme.js"></script>
+<script src="background.js"></script>
+<script src="monitors.js"></script>
+<script src="lib/xterm/xterm.js"></script>
+<script src="termView.js"></script>
+<script src="terminalDock.js"></script>
+<script src="imageStaging.js"></script>
+<script src="chatView.js"></script>
+<script src="viewer.js"></script>
+<script src="usage.js"></script>
+<script src="shell.js"></script>
+<script src="extensions.js"></script>
+</body>
+</html>

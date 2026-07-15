@@ -1,0 +1,17 @@
+{
+  "name": "apex-shell",
+  "productName": "Apex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Apex Shell — the standalone window for AI seats, terminals, viewers, and trackers.",
+  "main": "main/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "43.1.0"
+  },
+  "dependencies": {
+    "node-pty": "1.1.0"
+  }
+}

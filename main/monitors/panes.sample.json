@@ -1,0 +1,56 @@
+{
+  "_readme": "Apex monitor grid — panes are config, not code. This SAMPLE loads only when no panes.json exists beside it: copy it to panes.json and make the panes yours. A pane = an id, a title, a source, and widgets. Source types: 'system' (this machine's stats — CPU/memory/disk/uptime via Node's own os/fs APIs, zero permissions, nothing leaves the box), 'weather' (Open-Meteo, no API key; set source.city — omit it and the tile guesses from your IP, which lands on your ISP's region), 'demo' (fake wandering data, the template pane below), 'http-json' (poll a JSON endpoint: set source.base + source.pane; the shell GETs base/pane and binds the returned fields), or add your own module beside sourceDemo.js (one file: start(pane, ctx) -> stop, action(pane, id, ctx)). Widget kinds: led (good/warning/critical), stat (text/number), gauge (0..max fill), list (rows of name+value), tiles (a row of day-cards: name/icon/cond/hi/lo/rain — full view only), input (a free-text setting: posts cfg:<key>:<text> to the source, which validates/applies/persists — the weather Location field), buttons (fire 'action' verbs at your source), log (activity lines). 'bind' names the field of your source's emitted data each widget reads. Optional \"only\": \"quarter\" or \"full\" on a PANE keeps it out of the other view entirely (its bar chip stays), and on a WIDGET targets it per view (the quarter grid already shows only led/gauge/stat); \"wide\": true on a pane spans it across the full grid's width. The tracker-bar chip shows each pane's first led + first gauge/stat. No credentials in this file, ever.",
+  "panes": [
+    {
+      "id": "machine", "title": "This Machine", "service": "local stats — zero setup", "refreshSecs": 5,
+      "only": "quarter",
+      "source": { "type": "system" },
+      "widgets": [
+        { "kind": "led", "bind": "status", "label": "Health" },
+        { "kind": "gauge", "bind": "cpu", "label": "CPU %", "max": 100 },
+        { "kind": "gauge", "bind": "mem", "label": "Memory %", "max": 100 },
+        { "kind": "stat", "bind": "memText", "label": "RAM" },
+        { "kind": "stat", "bind": "uptime", "label": "Uptime" },
+        { "kind": "stat", "bind": "host", "label": "Host" }
+      ]
+    },
+    {
+      "id": "storage", "title": "Storage", "service": "OS drive — set source.disk for another", "refreshSecs": 30,
+      "only": "quarter",
+      "source": { "type": "system" },
+      "widgets": [
+        { "kind": "led", "bind": "status", "label": "Health" },
+        { "kind": "gauge", "bind": "disk", "label": "Used %", "max": 100 },
+        { "kind": "stat", "bind": "diskText", "label": "Free" }
+      ]
+    },
+    {
+      "id": "weather", "title": "Weather", "service": "Open-Meteo — set source.city for accuracy", "refreshSecs": 900,
+      "wide": true,
+      "source": { "type": "weather" },
+      "widgets": [
+        { "kind": "led", "bind": "status", "label": "Feed", "only": "quarter" },
+        { "kind": "stat", "bind": "now", "label": "Now", "only": "quarter" },
+        { "kind": "stat", "bind": "cond", "label": "Sky", "only": "quarter" },
+        { "kind": "stat", "bind": "today", "label": "Today", "only": "quarter" },
+        { "kind": "stat", "bind": "feels", "label": "Feels", "only": "quarter" },
+        { "kind": "stat", "bind": "wind", "label": "Wind", "only": "quarter" },
+        { "kind": "stat", "bind": "hum", "label": "Humidity", "only": "quarter" },
+        { "kind": "stat", "bind": "place", "label": "Where", "only": "quarter" },
+        { "kind": "input", "key": "loc", "label": "ZIP code", "placeholder": "5-digit ZIP (a city name works too)", "only": "quarter" },
+        { "kind": "tiles", "bind": "week", "label": "This week" }
+      ]
+    },
+    {
+      "id": "generic", "title": "Demo Tracker", "service": "template — replace me", "refreshSecs": 5,
+      "only": "quarter",
+      "source": { "type": "demo" },
+      "widgets": [
+        { "kind": "led", "bind": "status", "label": "Status" },
+        { "kind": "gauge", "bind": "load", "label": "Load %", "max": 100 },
+        { "kind": "stat", "bind": "count", "label": "Items" },
+        { "kind": "list", "bind": "rows", "label": "Recent", "rows": 4 }
+      ]
+    }
+  ]
+}

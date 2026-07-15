@@ -1,0 +1,123 @@
+/* Apex — monitor widgets (ported; + LIVE badge, log widget, busy state). */
+.mon-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+            gap:14px; }
+.mon-grid.compact { grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:10px; }
+
+.mon-pane { background:var(--surface); border:1px solid var(--edge); border-radius:14px;
+            padding:14px 16px; display:flex; flex-direction:column; gap:12px; }
+.mon-grid .mon-pane.wide { grid-column: 1 / -1; }   /* full-width card (the weather week) */
+.compact .mon-pane { padding:10px 12px; gap:8px; border-radius:11px; }
+.mon-pane .wrow { display:flex; flex-wrap:wrap; gap:12px 26px; align-items:center; }
+.compact .mon-pane .wrow { gap:8px 16px; }
+.mon-pane .mhead { display:flex; align-items:baseline; gap:8px; }
+.mon-pane .mhead b { font-size:13.5px; font-weight:600; }
+.compact .mon-pane .mhead b { font-size:12px; }
+.mon-pane .mhead .svc { font-size:10.5px; color:var(--faint); }
+.mon-pane .mhead .badge { margin-left:auto; font-size:9.5px; color:var(--dim);
+      border:1px solid var(--edge); border-radius:5px; padding:1px 6px; letter-spacing:.08em; }
+.mon-pane .mhead .badge.live { color:var(--good); border-color:var(--good); }
+.mon-pane.busy .btns button { opacity:.35; pointer-events:none; }
+.mon-pane.busy .badge::after { content:" · WORKING"; color:var(--warning); }
+.mon-pane.busy .gauge .val { color:var(--warning); }
+.mon-pane.busy .stat .num { color:var(--warning); }
+
+.led { display:flex; align-items:center; gap:8px; font-size:12.5px; }
+.compact .led { font-size:11.5px; gap:6px; }
+.led .dot { width:9px; height:9px; border-radius:50%; background:var(--faint); }
+.led .ic { font-size:11px; width:13px; text-align:center; }
+.led .lab { color:var(--dim); }
+.led.good     .dot { background:var(--good);     box-shadow:0 0 7px var(--good); }
+.led.warning  .dot { background:var(--warning);  box-shadow:0 0 7px var(--warning); }
+.led.critical .dot { background:var(--critical); box-shadow:0 0 7px var(--critical); }
+.led.good .ic { color:var(--good); } .led.warning .ic { color:var(--warning); }
+.led.critical .ic { color:var(--critical); }
+
+.gauge { display:flex; flex-direction:column; align-items:center; }
+.gauge svg { width:150px; height:96px; overflow:visible; }
+.compact .gauge svg { width:110px; height:70px; }
+.gauge .val { font-size:19px; font-weight:600; margin-top:-30px; }
+.compact .gauge .val { font-size:15px; margin-top:-22px; }
+.gauge .lab { font-size:11px; color:var(--dim); }
+.compact .gauge .lab { font-size:10px; }
+
+.stat { min-width:0; max-width:100%; }
+/* long values ellipsize inside the card (the quarter Weather "Where" was
+   escaping its border, the operator 2026-07-15); the full text rides the hover */
+.stat .num { font-size:26px; font-weight:650; line-height:1.1; white-space:nowrap;
+             overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+.compact .stat .num { font-size:19px; }
+.stat .lab { font-size:11px; color:var(--dim); }
+
+/* free-text setting field (kind:'input' — e.g. the weather location) */
+.minput { display:flex; align-items:center; gap:8px; width:100%; }
+.minput label { font-size:10.5px; color:var(--faint); letter-spacing:.06em;
+                text-transform:uppercase; white-space:nowrap; }
+.minput input { flex:1; min-width:60px; background:var(--bg); color:var(--text);
+                border:1px solid var(--edge); border-radius:7px; padding:4px 8px;
+                font-size:12px; font-family:inherit; outline:none; }
+.minput input:focus { border-color:var(--accent); }
+.minput button { border:1px solid var(--edge); background:var(--surface);
+                 color:var(--dim); font-size:11px; padding:4px 10px;
+                 border-radius:6px; cursor:pointer; }
+.minput button:hover { color:var(--text); border-color:var(--accent); }
+
+.list .lab { font-size:11px; color:var(--dim); margin-bottom:5px; }
+.list .row { display:flex; justify-content:space-between; gap:10px;
+             font-size:12px; padding:3.5px 0; border-top:1px solid var(--edge); }
+.list .row span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.list .row span:last-child { color:var(--dim); }
+
+.btns { display:flex; flex-wrap:wrap; gap:8px; }
+.btns button { background:color-mix(in srgb, var(--accent) 12%, transparent);
+               border:1px solid var(--edge);
+               color:var(--text); border-radius:8px; padding:6px 12px;
+               font-size:12px; cursor:pointer; }
+.btns button:hover { border-color:var(--accent); }
+
+.mlog { background:var(--bg); border:1px solid var(--edge); border-radius:8px; }
+.mlog .lab { font-size:11px; color:var(--dim); padding:6px 10px 0; }
+.mlog pre { font: 11px/1.55 Consolas, monospace; color:var(--dim);
+            padding:6px 10px 8px; margin:0; max-height:150px; overflow-y:auto;
+            white-space:pre-wrap; word-break:break-all; user-select:text; }
+.mset .lab { font-size:11px; color:var(--dim); margin-bottom:4px; }
+.mset .srow { display:flex; align-items:center; justify-content:space-between;
+              gap:10px; padding:3px 0; }
+.mset .srow label { font-size:12px; color:var(--text); }
+.mset select { background:var(--bg); color:var(--text); border:1px solid var(--edge);
+               border-radius:7px; padding:4px 8px; font-size:12px; font-family:inherit;
+               outline:none; min-width:110px; }
+.mset select:focus { border-color:var(--accent); }
+
+.gated { font-size:11.5px; color:var(--warning); }
+
+/* week-of-day tiles — TV-forecast cards (the operator's reference image, 2026-07-15):
+   seven FULL-SIZE tiles in one row, day banner up top, big icon, giant high,
+   dimmer low. Theme-tokened, no hardcoded colors. */
+.tiles { width:100%; }
+.tiles .lab { font-size:10.5px; color:var(--faint); letter-spacing:.08em;
+              text-transform:uppercase; margin-bottom:8px; }
+.tiles .trow { display:flex; gap:12px; flex-wrap:nowrap; }
+.wtile { flex:1 1 0; min-width:0; text-align:center;
+         display:flex; flex-direction:column;
+         min-height:380px;                     /* doubled (the operator, 2026-07-15) */
+         container-type:inline-size;           /* type scales WITH the tile —
+           fixed px left the icon/temps marooned in empty card (smoke-shot-
+           verified, same day); cqw units fill whatever width the row gives */
+         border:1px solid var(--edge); border-radius:11px; overflow:hidden;
+         padding:0 4px 16px;
+         background:linear-gradient(180deg,
+           color-mix(in srgb, var(--accent) 12%, var(--surface)),
+           color-mix(in srgb, var(--bg) 70%, var(--surface))); }
+.wtile .d { margin:0 -4px;
+            background:color-mix(in srgb, var(--accent) 28%, var(--bg));
+            color:var(--text); font-size:clamp(12px, 5cqw, 18px); font-weight:700;
+            letter-spacing:.16em; text-transform:uppercase; padding:8px 0; }
+.wtile .i { font-size:clamp(48px, 34cqw, 128px); line-height:1.2; margin-top:14px; }
+.wtile .c { font-size:clamp(11px, 4.5cqw, 16px); color:var(--dim); min-height:15px;
+            padding:0 2px;
+            overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.wtile .hi { font-size:clamp(40px, 26cqw, 96px); font-weight:800; color:var(--text);
+             line-height:1.05; margin-top:auto; }   /* temps sit in the lower half */
+.wtile .lo { font-size:clamp(18px, 11cqw, 40px); font-weight:600; color:var(--faint); }
+.wtile .r { font-size:clamp(10px, 4cqw, 15px); color:var(--dim); margin-top:7px; min-height:14px; }
+.wtile:first-child { border-color:color-mix(in srgb, var(--accent) 55%, var(--edge)); }

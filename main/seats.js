@@ -1,0 +1,389 @@
+// Apex — seats module (main side). Adopts the Phase-1 engine into the app:
+// registers the bus verbs, injects the storage adapter (history index), and
+// re-announces on every renderer (re)load — the R23 architecture doing its
+// job: the view is a projection, the engine owns the truth.
+'use strict';
+
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+const bus = require('./bus');
+const store = require('./store');
+const artifacts = require('./artifacts');
+const { createSeatHost } = require('./engine/seatHost');
+
+// ---- seat presets: the shell ships ZERO named seats. Extensions register a
+// named rail button + kickoff prompt + optional working directory/wrap prompt.
+const presets = new Map();   // name -> { name, letter, title, kickoff, cwd }
+let cwdOverride = null;      // extension-set default cwd
+let wrapOverride = null;     // extension-set End-Session wrap prompt
+
+const extensionApi = {
+  registerPreset(p) {
+    if (p && typeof p.name === 'string' && p.name && p.name !== 'Seat')
+      presets.set(p.name, p);
+  },
+  setDefaultCwd(dir) { if (dir && fs.existsSync(dir)) cwdOverride = dir; },
+  setWrapPrompt(text) { if (typeof text === 'string' && text) wrapOverride = text; },
+};
+
+// Bare default: the configured workspace folder (seatconfig `_workspace`),
+// else the user's home. Extensions may override it.
+function defaultCwd() {
+  if (cwdOverride) return cwdOverride;
+  try {
+    const ws = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))._workspace;
+    if (typeof ws === 'string' && ws && fs.existsSync(ws)) return ws;
+  } catch { /* no config yet */ }
+  return os.homedir();
+}
+const seatCwd = (persona) => (presets.get(persona) || {}).cwd || defaultCwd();
+
+// Per-persona launch config (J21/J23): `current` = live dials for the next
+// launch, `default` = that persona's saved default. Moved home to app/ when
+// the extension era was archived (2026-07-12, the operator's "proven").
+const CONFIG_FILE = path.resolve(__dirname, '..', 'seatconfig.json');
+function launchFor(persona) {
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { /* defaults */ }
+  // File shape (J21/J23, flat): { "<persona>": {current, default}, "_default": {...} }
+  const p = cfg[persona] || {};
+  const base = cfg._default || {};
+  // 'default' anywhere in the layer stack means "not set here — fall through"
+  const val = (x) => (x && x !== 'default') ? x : undefined;
+  const pick = (k) =>
+    val(p.current && p.current[k]) || val(p.default && p.default[k]) || val(base[k]);
+  const launch = {};
+  const model = pick('model'), effort = pick('effort');
+  // Defaults store the codex TIER as a composite ('codex-sol' etc., J80):
+  // split here so 'codex' stays the lane marker downstream — a tier in
+  // launch.model would spawn `claude --model sol` (the J69 trap).
+  if (model && model.startsWith('codex-')) {
+    launch.model = 'codex';
+    launch.codexModel = model.slice('codex-'.length);
+  } else if (model) launch.model = model;
+  if (effort) launch.effort = effort;
+  // Explicit always; `manual` unless the config really says otherwise (J28).
+  launch.permissionMode = pick('permissions') || 'manual';
+  return launch;
+}
+
+let host = null;
+let createFromMessage = null;
+
+function register() {
+  const wireLog = store.openLog('seats');
+  host = createSeatHost({
+    apexRoot: defaultCwd(),          // fallback only — every create passes cwd
+    wrapPrompt: () => wrapOverride,  // lazy: extensions register after us
+    emit: (m) => {
+      if (m.type === 'seatEvt' && m.m.type === 'artifactCandidate') {
+        artifacts.candidate(m.id, m.m.path);       // app-level concern, not engine
+        return;
+      }
+      if (m.type === 'seatEvt' && m.m.type === 'localUsage') {
+        // exact Ollama token counts → the usage trackers (app-level, like artifacts)
+        require('./usage').localTokens(m.m.promptTokens, m.m.evalTokens);
+        return;
+      }
+      bus.post(m.type, m);
+    },
+    log: (l) => wireLog(l),
+    record: (persona, sessionId, title) => {
+      store.recordChat(persona, sessionId, title);
+      // push, don't wait for a reload — the rail dropdown reads live state
+      bus.post('seatHistory', { history: store.chatHistory() });
+    },
+    onChange: () => bus.post('seatList', { seats: host.list() }),
+    // learned context windows survive a restart — without this, resumed chats'
+    // meters stay blank until the first completed turn (the operator, 2026-07-13)
+    windowsFile: path.join(__dirname, '..', 'state', 'model-windows.json'),
+  });
+
+  // view → engine (exact types — the engine validates its own set again).
+  // seatPtyInput/seatPtyResize were in the ENGINE's claim set but never
+  // registered here — every terminal keystroke died at the bus (2026-07-12).
+  for (const t of ['seatSend', 'seatPerm', 'seatStop', 'seatMode',
+                   'seatModel', 'seatPtyInput', 'seatPtyResize', 'seatReplay',
+                   'seatWrap'])
+    bus.on(t, (msg) => host.handle(msg));
+  bus.on('seatClose', (msg) => { artifacts.seatClosed(msg.id); host.handle(msg); });
+
+  createFromMessage = (msg) => {
+    if (msg.terminal) {
+      // The PTY lane (R25). Known tenants only — a bus message must never
+      // pick an arbitrary executable to spawn.
+      const t = { agy: { command: 'agy', title: 'agy — Gemini' },
+                  claude: { command: 'claude', title: 'claude — terminal' },
+                  codex: { command: 'codex', title: 'codex — terminal' },
+                  cmd: { command: 'cmd.exe', title: 'cmd — shell' } }[msg.terminal];
+      if (!t) return;
+      host.create(null, t.title,
+        { persona: t.title, cwd: defaultCwd(), launch: { mode: 'pty', command: t.command } });
+      return;
+    }
+    const persona = msg.persona || '';
+    const launch = Object.assign(launchFor(persona || 'Seat'), msg.launch || {});
+    // blank seat configured to `agy` = the Gemini terminal (PTY is agy's only
+    // viable shape — issue #76). The permissions dial maps to agy's OWN
+    // verified flags (platform-watch, v1.1.1): manual = ask in-terminal
+    // (agy's default), acceptEdits = --mode accept-edits, bypass =
+    // --dangerously-skip-permissions. No live switch exists — launch-time only.
+    // `codex` on the model dial = the OWNED Codex clean-view seat (R33 — the
+    // app-server lane in engine/codexSeat.js: streamed chat, our permission
+    // cards, resume, wrap). Works for blank AND persona seats — a persona
+    // rides the Codex substrate via the ~/.codex/AGENTS.md chain (proven
+    // 2026-07-14): cwd puts the thread in the tree, the kickoff goes in as
+    // the first turn, the persona seats itself. Codex session ids are
+    // namespaced ("codex:<threadId>") so history resume routes back here.
+    // The raw TUI stays available under (+) → TERMINALS as the escape hatch.
+    const codexResume = msg.resume && String(msg.resume).startsWith('codex:');
+    if (codexResume || (launch.model === 'codex' && !msg.resume)) {
+      const p = presets.get(persona);
+      // resumed chats carry their earned title back in (the J-era "wall of
+      // generic persona-name reset lesson applies to this lane too)
+      let ctitle = (typeof msg.title === 'string' && msg.title) ? msg.title : (persona || 'Seat');
+      if (msg.resume && !msg.title) {
+        const hit = (store.chatHistory()[persona] || []).find((e) => e.sessionId === msg.resume);
+        if (hit && hit.title) ctitle = hit.title;
+      }
+      host.create(
+        (p && !msg.resume) ? (p.kickoff || null) : null,
+        ctitle,
+        { persona: persona || 'Seat', cwd: seatCwd(persona), resume: msg.resume,
+          launch: { model: 'codex', codexModel: launch.codexModel,
+                    effort: launch.effort,
+                    permissionMode: launch.permissionMode } });
+      return;
+    }
+    // resuming a CLAUDE session while the dial sits on codex — the dial value
+    // must not leak onto `claude --model`
+    if (msg.resume && launch.model === 'codex') delete launch.model;
+    if (!persona && launch.model === 'agy') {
+      const agyArgs = launch.permissionMode === 'bypassPermissions'
+        ? ['--dangerously-skip-permissions']
+        : launch.permissionMode === 'acceptEdits' ? ['--mode', 'accept-edits'] : [];
+      host.create(null, 'agy — Gemini',
+        { persona: 'agy — Gemini', cwd: defaultCwd(),
+          launch: { mode: 'pty', command: 'agy', args: agyArgs } });
+      return;
+    }
+    // A RESUMED session already carries its persona in-history — re-sending
+    // the seat-launch kickoff made it re-run the whole seating ritual
+    // (the operator's report). Kickoff is for FRESH persona seats only.
+    //
+    // A resumed seat must also carry its EARNED TITLE back in. It used to start
+    // at the bare persona name, and the engine records the starting title to
+    // history on `init` — so every resume ERASED the chat's real name, and
+    // `autoTitled` (true on resume) meant it never recovered. the operator's history was
+    // a wall of repeated persona names.
+    let title = (typeof msg.title === 'string' && msg.title) ? msg.title : (persona || 'Seat');
+    if (msg.resume && !msg.title) {
+      const hit = (store.chatHistory()[persona] || [])
+        .find((e) => e.sessionId === msg.resume);
+      if (hit && hit.title) title = hit.title;
+    }
+    // Kickoff comes from the preset (extension-registered). A RESUMED session
+    // already carries its persona in-history — kickoff is for FRESH preset
+    // seats only. An unknown/retired preset name still opens a plain seat.
+    const preset = presets.get(persona);
+    host.create(
+      (preset && !msg.resume) ? (preset.kickoff || null) : null,
+      title,
+      { persona: persona || 'Seat', cwd: seatCwd(persona), launch, resume: msg.resume });
+  };
+  bus.on('seatCreate', createFromMessage);
+
+  bus.on('seatHistory', () =>
+    bus.post('seatHistory', { history: store.chatHistory() }));
+  // A reloaded window asks what survived; the roster was previously push-only.
+  bus.on('seatList', () => bus.post('seatList', { seats: host.list() }));
+
+  // Effort has no live control subtype we can verify — a change is a SEAMLESS
+  // RESTART: same session resumed with the new flag, history restored by the
+  // gate-proven backfill. Labeled as a restart in the UI, never disguised.
+  // ALSO the only way into bypassPermissions (J44): the CLI accepts that mode at
+  // launch only, so the dial hands it here rather than lying about a live switch.
+  bus.on('seatRelaunch', (msg) => {
+    const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+    const PERMS = new Set(['manual', 'auto', 'acceptEdits', 'dontAsk', 'bypassPermissions']);
+    const entry = host.list().find((s) => s.id === msg.id);
+    if (!entry || entry.local || entry.pty || !entry.sessionId) {
+      bus.post('toast', { text: 'no session to restart yet — give the seat a moment' });
+      return;
+    }
+    if (msg.effort && !EFFORTS.has(msg.effort)) return;
+    if (msg.permissions && !PERMS.has(msg.permissions)) return;
+    if (!msg.effort && !msg.permissions) return;
+    const { sessionId, persona, title, mode, model, codexModel, effort } = entry;
+    artifacts.seatClosed(msg.id);
+    host.handle({ type: 'seatClose', id: msg.id });
+    bus.post('seatGone', { id: msg.id });
+    setTimeout(() => {                       // past the kill backstop: transcript flushed
+      const launch = { permissionMode: msg.permissions || mode };
+      if (model) launch.model = model;
+      if (codexModel) launch.codexModel = codexModel;   // tier survives a codex relaunch
+      const eff = msg.effort || effort;      // a permissions restart must not drop effort
+      if (eff) launch.effort = eff;
+      host.create(null, title, { persona, cwd: seatCwd(persona), resume: sessionId, launch });
+    }, 2500);
+  });
+
+  // ---- per-persona launch config (the AI-bar defaults panel) ----
+  // 'default' is NOT a value (the operator's ruling): dials hold concrete settings
+  // only; the panel shows RESOLVED values (current → default → _default).
+  const readCfg = () => { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { return {}; } };
+  const writeCfg = (cfg) => {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+    wireLog('config write: ' + JSON.stringify(cfg));   // debug-ready: not-saving reports become diagnosable
+  };
+  const KEYS = ['model', 'effort', 'permissions'];
+  const resolve = (cfg, persona, layer) => {   // layer: 'current' or 'default'
+    const p = cfg[persona] || {}, base = cfg._default || {};
+    const out = {};
+    for (const k of KEYS) {
+      out[k] = (layer === 'current' && p.current && p.current[k]) ||
+               (p.default && p.default[k]) || base[k] || '';
+    }
+    // pre-J80 configs hold bare 'codex' — surface it as the tier it actually
+    // launches (sol IS the plan default) so the panel's dial lands on a real option
+    if (out.model === 'codex') out.model = 'codex-sol';
+    return out;
+  };
+  const postCfg = (cfg) => {
+    const view = {};
+    for (const persona of [...presets.keys(), 'Seat'])
+      view[persona] = { current: resolve(cfg, persona, 'current'),
+                        default: resolve(cfg, persona, 'default') };
+    bus.post('seatConfig', { config: view });
+  };
+  const postPresets = () => bus.post('seatPresets', {
+    presets: [...presets.values()].map((p) => ({
+      name: p.name, letter: p.letter || p.name[0].toUpperCase(),
+      title: p.title || ('New chat - ' + p.name),
+    })),
+  });
+  bus.on('seatPresets', postPresets);
+  bus.on('seatConfigGet', () => postCfg(readCfg()));
+  bus.on('seatConfigSet', (msg) => {
+    const OK = { model: new Set(['fable', 'opus', 'sonnet', 'haiku', 'qwen', 'agy',
+                                 'codex', 'codex-sol', 'codex-terra', 'codex-luna']),
+                 effort: new Set(['low', 'medium', 'high', 'xhigh', 'max']),
+                 permissions: new Set(['manual', 'auto', 'acceptEdits', 'dontAsk', 'bypassPermissions']) };
+    if (!msg.persona || !OK[msg.key] || !OK[msg.key].has(msg.value)) return;
+    const cfg = readCfg();
+    const p = cfg[msg.persona] || (cfg[msg.persona] = {});
+    (p.current || (p.current = {}))[msg.key] = msg.value;
+    writeCfg(cfg);
+    postCfg(cfg);
+  });
+  bus.on('seatConfigDefault', (msg) => {      // resolved current becomes the default
+    const cfg = readCfg();
+    if (!cfg[msg.persona]) cfg[msg.persona] = {};
+    cfg[msg.persona].default = resolve(cfg, msg.persona, 'current');
+    writeCfg(cfg);
+    postCfg(cfg);
+  });
+  bus.on('seatConfigReset', (msg) => {        // current ← resolved default
+    const cfg = readCfg();
+    if (!cfg[msg.persona]) cfg[msg.persona] = {};
+    cfg[msg.persona].current = resolve(cfg, msg.persona, 'default');
+    writeCfg(cfg);
+    postCfg(cfg);
+  });
+
+  // Clicked path in chat → the working view (read-only render; the external
+  // open stays behind the view's own ↗). Absolute existing paths only.
+  bus.on('artifactOpen', (msg) => {
+    if (msg.path && path.isAbsolute(msg.path) && fs.existsSync(msg.path))
+      artifacts.candidate(msg.id, msg.path);
+    else bus.post('toast', { text: 'path not found: ' + (msg.path || '(empty)') });
+  });
+
+  // (VS Code hand-off REMOVED 2026-07-12, the operator's ruling — the vscode:// door
+  // only resumes sessions of the workspace VS Code already has open; anywhere
+  // else it spawns a FRESH session. "I didn't ask for this." Git keeps the code.)
+
+  // Renderer booted (or RELOADED): rebuild the projection — live seats plus
+  // every unanswered permission request (R23, harness-proven gate 2b).
+  bus.on('ready', () => {
+    host.reannounce();
+    postPresets();   // rail buttons rebuild before the roster lands
+    bus.post('seatList', { seats: host.list() });
+    bus.post('seatHistory', { history: store.chatHistory() });
+  });
+}
+
+function snapshotForRestart() {
+  const chats = [];
+  const notRestored = [];
+  if (!host) return { chats, notRestored };
+
+  for (const seat of host.list()) {
+    if (!seat.local && !seat.pty && seat.sessionId) {
+      const launch = { permissionMode: seat.mode || 'manual' };
+      if (seat.model) launch.model = seat.model;
+      if (seat.codexModel) launch.codexModel = seat.codexModel;
+      if (seat.effort) launch.effort = seat.effort;
+      chats.push({
+        persona: seat.persona || 'Seat',
+        sessionId: seat.sessionId,
+        title: seat.title || seat.persona || 'Seat',
+        launch,
+      });
+    } else if (seat.pty) {
+      notRestored.push(seat.title || 'terminal');
+    } else if (seat.local) {
+      notRestored.push(seat.title || 'local model');
+    } else {
+      notRestored.push((seat.title || 'Claude chat') + ' (session not ready)');
+    }
+  }
+  return { chats, notRestored };
+}
+
+function restoreChats(entries) {
+  if (!host || !createFromMessage) return 0;
+  const MODELS = new Set(['fable', 'opus', 'sonnet', 'haiku']);
+  const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+  const PERMS = new Set(['manual', 'auto', 'acceptEdits', 'dontAsk', 'bypassPermissions']);
+  let restored = 0;
+
+  for (const saved of entries) {
+    if (!saved || typeof saved.sessionId !== 'string' || !saved.sessionId) continue;
+    const launch = {};
+    const raw = saved.launch || {};
+    if (MODELS.has(raw.model)) launch.model = raw.model;
+    if (['sol', 'terra', 'luna'].includes(raw.codexModel)) launch.codexModel = raw.codexModel;
+    if (EFFORTS.has(raw.effort)) launch.effort = raw.effort;
+    launch.permissionMode = PERMS.has(raw.permissionMode) ? raw.permissionMode : 'manual';
+    createFromMessage({
+      persona: typeof saved.persona === 'string' ? saved.persona : 'Seat',
+      resume: saved.sessionId,
+      title: typeof saved.title === 'string' ? saved.title : '',
+      launch,
+    });
+    restored++;
+  }
+  return restored;
+}
+
+function dispose() { if (host) host.disposeAll(); }
+
+// Smoke-test affordance only (main.js APEX_SMOKE_PTY): mounts a real ConPTY
+// seat headless so CSP/xterm regressions surface in the console-error trap.
+function debugCreatePty() {
+  if (host) host.create(null, 'smoke-pty',
+    { persona: 'smoke-pty', cwd: defaultCwd(),
+      launch: { mode: 'pty', command: 'cmd.exe', args: ['/k', 'echo APEX-PTY-SMOKE'] } });
+}
+
+module.exports = {
+  register,
+  dispose,
+  defaultCwd,
+  debugCreatePty,
+  snapshotForRestart,
+  restoreChats,
+  extensionApi,
+};

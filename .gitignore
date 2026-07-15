@@ -1,0 +1,14 @@
+node_modules/
+dist/
+state/
+
+# Per-install state written by the UI.
+seatconfig.json
+theme.json
+background.json
+main/monitors/panes.json
+
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

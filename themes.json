@@ -1,0 +1,28 @@
+{
+  "Slate": {
+    "bg": "#171617",
+    "surface": "#2a2d32",
+    "edge": "#39414b",
+    "scroll": "#46505c",
+    "text": "#d3d7dd",
+    "dim": "#6b7686",
+    "faint": "#324157",
+    "accent": "#50abf1",
+    "good": "#16a34a",
+    "warning": "#d97706",
+    "critical": "#dc2626"
+  },
+  "v1": {
+    "bg": "#171617",
+    "surface": "#2a2d32",
+    "edge": "#241d33",
+    "scroll": "#241d33",
+    "text": "#cfc9de",
+    "dim": "#5a5470",
+    "faint": "#324157",
+    "accent": "#50abf1",
+    "good": "#16a34a",
+    "warning": "#d97706",
+    "critical": "#dc2626"
+  }
+}

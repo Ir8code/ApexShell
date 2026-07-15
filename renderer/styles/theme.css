@@ -1,0 +1,44 @@
+/* Apex — the theme panel (the operator's color controls; a button, never a file edit). */
+#themePanel { position: fixed; top: calc(var(--title-h) + 10px); right: 10px;
+  width: 280px; max-height: calc(100vh - 60px); overflow-y: auto; z-index: 1300;
+  background: var(--surface); border: 1px solid var(--edge); border-radius: 14px;
+  padding: 16px 18px; display: none;
+  box-shadow: 0 22px 60px rgba(0,0,0,.6); }
+#themePanel.open { display: block; }
+#themePanel h3 { font-size: 12px; letter-spacing: .35em; text-indent: .35em;
+  color: var(--dim); font-weight: 600; margin-bottom: 4px; }
+#themePanel .note { font-size: 11px; color: var(--faint); line-height: 1.5;
+  margin-bottom: 12px; }
+#themePanel .presetRow { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; }
+#themePanel .presetRow select { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 7px; padding: 5px 7px; font: inherit;
+  font-size: 11.5px; outline: none; }
+#themePanel .presetRow select:focus { border-color: var(--accent); }
+#themePanel .presetRow button { background: none; border: 1px solid var(--edge);
+  border-radius: 7px; color: var(--dim); font-size: 11px; padding: 5px 8px; cursor: pointer; }
+#themePanel .presetRow button:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+#themePanel .presetRow button:disabled { cursor: default; opacity: .45; }
+#themePanel .trow { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
+#themePanel .trow label { flex: 1; font-size: 12px; color: var(--text); }
+#themePanel .trow .hex { width: 66px; font: 11px Consolas, monospace;
+  color: var(--dim); text-align: right; }
+#themePanel input[type="color"] { width: 34px; height: 24px; border: 1px solid var(--edge);
+  border-radius: 6px; background: none; padding: 1px; cursor: pointer; }
+#themePanel .tbtns { display: flex; gap: 8px; margin-top: 8px; }
+#themePanel .tbtns:first-of-type { margin-top: 14px; }
+#themePanel .tbtns button { flex: 1; background: none; border: 1px solid var(--edge);
+  border-radius: 8px; color: var(--dim); font-size: 11.5px; padding: 7px 8px; cursor: pointer; }
+#themePanel .tbtns button:hover { color: var(--text); border-color: var(--accent); }
+#themePanel .tbtns button.primary { color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, transparent); }
+/* inline Save-as name entry (window.prompt doesn't exist in Electron) */
+#themePanel .tnameRow { display: flex; gap: 6px; margin-top: 8px; }
+#themePanel .tnameRow[hidden] { display: none; }
+#themePanel .tnameRow input { flex: 1; min-width: 0; background: var(--bg); color: var(--text);
+  border: 1px solid var(--edge); border-radius: 6px; font-size: 12px; padding: 6px 8px; outline: none; }
+#themePanel .tnameRow input:focus { border-color: var(--accent); }
+#themePanel .tnameRow button { background: none; border: 1px solid var(--edge); border-radius: 6px;
+  color: var(--dim); font-size: 11.5px; padding: 6px 10px; cursor: pointer; }
+#themePanel .tnameRow button:hover { color: var(--text); border-color: var(--accent); }
+#themePanel .tnameRow button.primary { color: var(--text);
+  background: color-mix(in srgb, var(--accent) 18%, transparent); }
