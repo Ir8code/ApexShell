@@ -6,6 +6,8 @@
 const fs = require('fs');
 const path = require('path');
 const foundation = require('./lib/foundation');
+const drafts = require('./lib/drafts');
+const { CARDS } = require('./lib/interview');
 
 const CONFIG_FILE = 'workspace.json';
 
@@ -103,6 +105,13 @@ function foundationStatus(stateDir) {
   }
 }
 
+function interviewWorkspace(stateDir) {
+  const workspace = selectedWorkspace(stateDir);
+  if (!foundation.inspectFoundation(workspace).exists)
+    throw new Error('Create the shared foundation before starting a persona draft.');
+  return workspace;
+}
+
 function register(ctx) {
   if (!ctx || !ctx.bus || typeof ctx.bus.on !== 'function' || typeof ctx.bus.post !== 'function')
     throw new Error('Persona Builder requires the extension bus.');
@@ -113,9 +122,34 @@ function register(ctx) {
   const publishStatus = () => ctx.bus.post('personaWorkspaceStatus', workspaceStatus(ctx.stateDir));
   const publishFoundation = () =>
     ctx.bus.post('personaFoundationStatus', foundationStatus(ctx.stateDir));
+  const publishDraftList = () => {
+    try {
+      const workspace = interviewWorkspace(ctx.stateDir);
+      const listed = drafts.listDrafts(ctx.stateDir, workspace);
+      ctx.bus.post('personaDraftList', { workspace, cards: CARDS, ...listed, error: null });
+    } catch (err) {
+      ctx.bus.post('personaDraftList', {
+        workspace: null,
+        cards: CARDS,
+        drafts: [],
+        warnings: [],
+        error: err.message,
+      });
+    }
+  };
+  const draftFailure = (action, err) => {
+    ctx.bus.post('personaDraftResult', {
+      ok: false,
+      action,
+      conflict: err.code === 'DRAFT_CONFLICT',
+      error: err.message,
+    });
+    ctx.bus.post('toast', { text: 'Persona draft was not changed: ' + err.message });
+  };
 
   ctx.bus.on('personaWorkspaceGet', publishStatus);
   ctx.bus.on('personaFoundationGet', publishFoundation);
+  ctx.bus.on('personaDraftListGet', publishDraftList);
   ctx.bus.on('personaWorkspaceChoose', async () => {
     try {
       const current = readWorkspaceConfig(ctx.stateDir).workspace;
@@ -163,6 +197,55 @@ function register(ctx) {
       ctx.bus.post('toast', { text: 'Shared foundation was not saved: ' + err.message });
     }
   });
+
+  ctx.bus.on('personaDraftCreate', (message) => {
+    try {
+      const draft = drafts.createDraft(ctx.stateDir, interviewWorkspace(ctx.stateDir), {
+        name: message && message.name,
+        useCase: message && message.useCase,
+      });
+      ctx.bus.post('personaDraftResult', { ok: true, action: 'created' });
+      ctx.bus.post('personaDraftStatus', { draft, cards: CARDS });
+    } catch (err) { draftFailure('create', err); }
+  });
+
+  ctx.bus.on('personaDraftOpen', (message) => {
+    try {
+      const workspace = interviewWorkspace(ctx.stateDir);
+      const draft = drafts.readDraft(ctx.stateDir, message && message.id);
+      if (path.resolve(draft.workspace) !== path.resolve(workspace))
+        throw new Error('Draft belongs to a different workspace.');
+      ctx.bus.post('personaDraftStatus', { draft, cards: CARDS });
+    } catch (err) { draftFailure('open', err); }
+  });
+
+  ctx.bus.on('personaDraftSave', (message) => {
+    try {
+      const workspace = interviewWorkspace(ctx.stateDir);
+      const current = drafts.readDraft(ctx.stateDir, message && message.id);
+      if (path.resolve(current.workspace) !== path.resolve(workspace))
+        throw new Error('Draft belongs to a different workspace.');
+      const draft = drafts.updateDraft(
+        ctx.stateDir,
+        current.id,
+        message && message.expectedRevision,
+        message && message.changes
+      );
+      ctx.bus.post('personaDraftResult', { ok: true, action: 'saved' });
+      ctx.bus.post('personaDraftStatus', { draft, cards: CARDS });
+    } catch (err) { draftFailure('save', err); }
+  });
+
+  ctx.bus.on('personaDraftDelete', (message) => {
+    try {
+      if (!message || message.confirmed !== true)
+        throw new Error('Draft deletion requires explicit confirmation.');
+      const workspace = interviewWorkspace(ctx.stateDir);
+      drafts.deleteDraft(ctx.stateDir, message.id, workspace);
+      ctx.bus.post('personaDraftResult', { ok: true, action: 'deleted' });
+      publishDraftList();
+    } catch (err) { draftFailure('delete', err); }
+  });
 }
 
 module.exports = {
@@ -172,4 +255,5 @@ module.exports = {
   workspaceStatus,
   selectedWorkspace,
   foundationStatus,
+  interviewWorkspace,
 };

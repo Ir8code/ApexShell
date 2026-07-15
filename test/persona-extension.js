@@ -8,6 +8,8 @@ const path = require('path');
 const { stateDirFor, chooseDirectory } = require('../main/extensionServices');
 const persona = require('../extensions/personas/main');
 const foundation = require('../extensions/personas/lib/foundation');
+const draftStore = require('../extensions/personas/lib/drafts');
+const { CARDS, KEYS } = require('../extensions/personas/lib/interview');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-persona-extension-'));
 let passed = 0;
@@ -244,7 +246,152 @@ function fakeBus() {
       assert.equal(fs.readFileSync(path.join(workspace, 'foundation.md'), 'utf8'), '# Outside\n');
     });
 
+    await gate('six interview cards explain expected answers in depth', () => {
+      assert.deepEqual(CARDS.map((card) => card.key), KEYS);
+      assert.equal(CARDS.length, 6);
+      for (const card of CARDS) {
+        assert.ok(card.question.length > 30, card.key + ' question is too thin');
+        assert.ok(card.explanation.length > 220, card.key + ' explanation is too thin');
+        assert.ok(card.include.length >= 4, card.key + ' coverage is too thin');
+        assert.ok(card.suggestions.length >= 4, card.key + ' suggestions are too thin');
+        assert.ok(card.example.length > 300, card.key + ' example is too thin');
+        assert.ok(card.help.length > 60, card.key + ' help is too thin');
+      }
+      assert.match(CARDS[0].explanation, /name field identifies the persona/i);
+      assert.match(CARDS[5].explanation, /never grants a tool, credential, permission, or provider/i);
+      assert.match(CARDS[5].explanation, /allowed, ask, or blocked/i);
+      assert.doesNotMatch(JSON.stringify(CARDS), /Mox|Jinx|Clio|Sable|Keith|Matt/);
+    });
+
+    await gate('draft creation is atomic, complete, and runtime-local', () => {
+      const stateDir = path.join(scratch, 'draft-create-state');
+      const workspace = path.join(scratch, 'draft-create-workspace');
+      fs.mkdirSync(stateDir);
+      fs.mkdirSync(workspace);
+      const draft = draftStore.createDraft(stateDir, workspace, {
+        name: ' Rowan ',
+        useCase: ' Review code independently. ',
+      });
+      assert.equal(draft.name, 'Rowan');
+      assert.equal(draft.useCase, 'Review code independently.');
+      assert.equal(draft.revision, 1);
+      assert.equal(draft.currentCard, 0);
+      assert.deepEqual(Object.keys(draft.answers), KEYS);
+      assert.equal(Object.values(draft.answers).every((answer) => answer === ''), true);
+      assert.deepEqual(fs.readdirSync(path.join(stateDir, 'drafts')), [draft.id + '.json']);
+      assert.equal(fs.existsSync(path.join(workspace, 'drafts')), false);
+    });
+
+    await gate('draft updates are revision-gated and preserve prior data on conflict', () => {
+      const stateDir = path.join(scratch, 'draft-update-state');
+      const workspace = path.join(scratch, 'draft-update-workspace');
+      fs.mkdirSync(stateDir);
+      fs.mkdirSync(workspace);
+      const created = draftStore.createDraft(stateDir, workspace, {
+        name: 'Rowan',
+        useCase: 'Review changes.',
+      });
+      const updated = draftStore.updateDraft(stateDir, created.id, created.revision, {
+        currentCard: 1,
+        answers: { identity: 'Evidence-first release engineer.' },
+      });
+      assert.equal(updated.revision, 2);
+      assert.equal(updated.currentCard, 1);
+      assert.equal(updated.answers.identity, 'Evidence-first release engineer.');
+      assert.throws(
+        () => draftStore.updateDraft(stateDir, created.id, 1, { currentCard: 2 }),
+        /changed since it was loaded/
+      );
+      try { draftStore.updateDraft(stateDir, created.id, 1, { currentCard: 2 }); }
+      catch (err) { assert.equal(err.code, 'DRAFT_CONFLICT'); }
+      assert.deepEqual(draftStore.readDraft(stateDir, created.id), updated);
+    });
+
+    await gate('draft listing isolates workspaces and reports malformed files', () => {
+      const stateDir = path.join(scratch, 'draft-list-state');
+      const workspaceA = path.join(scratch, 'draft-list-a');
+      const workspaceB = path.join(scratch, 'draft-list-b');
+      fs.mkdirSync(stateDir);
+      fs.mkdirSync(workspaceA);
+      fs.mkdirSync(workspaceB);
+      const draftA = draftStore.createDraft(stateDir, workspaceA, { name: 'A', useCase: 'Use A.' });
+      draftStore.createDraft(stateDir, workspaceB, { name: 'B', useCase: 'Use B.' });
+      fs.writeFileSync(path.join(stateDir, 'drafts', 'not-a-draft.json'), '{bad');
+      const listed = draftStore.listDrafts(stateDir, workspaceA);
+      assert.deepEqual(listed.drafts.map((draft) => draft.id), [draftA.id]);
+      assert.equal(listed.warnings.length, 1);
+      assert.match(listed.warnings[0], /Draft ID is invalid/);
+    });
+
+    await gate('linked draft stores are rejected before read or write', () => {
+      const stateDir = path.join(scratch, 'draft-link-state');
+      const outside = path.join(scratch, 'draft-link-outside');
+      const workspace = path.join(scratch, 'draft-link-workspace');
+      fs.mkdirSync(stateDir);
+      fs.mkdirSync(outside);
+      fs.mkdirSync(workspace);
+      fs.symlinkSync(outside, path.join(stateDir, 'drafts'), process.platform === 'win32' ? 'junction' : 'dir');
+      assert.throws(
+        () => draftStore.createDraft(stateDir, workspace, { name: 'Link', useCase: 'Reject links.' }),
+        /regular directory, not a link/
+      );
+      assert.deepEqual(fs.readdirSync(outside), []);
+    });
+
+    await gate('draft bus supports create, save, reopen, and confirmed delete', () => {
+      const bus = fakeBus();
+      const stateDir = path.join(scratch, 'draft-bus-state');
+      const workspace = path.join(scratch, 'draft-bus-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      persona.register({ bus, stateDir, async pickDirectory() { return null; } });
+
+      bus.handlers.get('personaDraftCreate')({ name: 'Rowan', useCase: 'Review releases.' });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaDraftResult', 'personaDraftStatus']);
+      const created = bus.posts[1].payload.draft;
+      assert.equal(bus.posts[1].payload.cards.length, 6);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaDraftSave')({
+        id: created.id,
+        expectedRevision: created.revision,
+        changes: { currentCard: 1, answers: { identity: 'A careful reviewer.' } },
+      });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaDraftResult', 'personaDraftStatus']);
+      const saved = bus.posts[1].payload.draft;
+      assert.equal(saved.answers.identity, 'A careful reviewer.');
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaDraftOpen')({ id: created.id });
+      assert.equal(bus.posts[0].payload.draft.revision, 2);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaDraftDelete')({ id: created.id, confirmed: false });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaDraftResult', 'toast']);
+      assert.equal(fs.existsSync(draftStore.draftPath(stateDir, created.id)), true);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaDraftDelete')({ id: created.id, confirmed: true });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaDraftResult', 'personaDraftList']);
+      assert.equal(fs.existsSync(draftStore.draftPath(stateDir, created.id)), false);
+    });
+
     await gate('renderer registers dock and drives workspace messages', () => {
+      function makeNode() {
+        return {
+          dataset: {},
+          textContent: '',
+          value: '',
+          hidden: false,
+          disabled: false,
+          children: [],
+          listeners: {},
+          addEventListener(type, fn) { this.listeners[type] = fn; },
+          appendChild(child) { this.children.push(child); return child; },
+          replaceChildren(...children) { this.children = children; },
+        };
+      }
       const nodes = new Map();
       const pane = {
         className: '',
@@ -255,15 +402,7 @@ function fakeBus() {
         get innerHTML() { return this.markup; },
         querySelector(selector) {
           if (!nodes.has(selector)) {
-            nodes.set(selector, {
-              dataset: {},
-              textContent: '',
-              value: '',
-              hidden: false,
-              disabled: false,
-              listeners: {},
-              addEventListener(type, fn) { this.listeners[type] = fn; },
-            });
+            nodes.set(selector, makeNode());
           }
           return nodes.get(selector);
         },
@@ -271,7 +410,17 @@ function fakeBus() {
       const posts = [];
       const handlers = new Map();
       let registered;
-      global.document = { createElement(tag) { assert.equal(tag, 'div'); return pane; } };
+      let rootCreated = false;
+      global.document = {
+        createElement(tag) {
+          if (!rootCreated) {
+            assert.equal(tag, 'div');
+            rootCreated = true;
+            return pane;
+          }
+          return makeNode();
+        },
+      };
       global.ApexBus = {
         on(type, fn) { handlers.set(type, fn); },
         post(type, payload) { posts.push({ type, payload }); },
@@ -334,6 +483,40 @@ function fakeBus() {
         assert.equal(posts.at(-1).type, 'personaFoundationSave');
         assert.equal(posts.at(-1).payload.expectedRevision, 'fresh-revision');
 
+        handlers.get('personaDraftList')({ workspace: path.join(scratch, 'ui-workspace'), cards: CARDS, drafts: [], warnings: [], error: null });
+        assert.equal(nodes.get('.personaDraftHome').hidden, false);
+        assert.equal(nodes.get('.personaDraftCreate').disabled, true);
+        nodes.get('.personaDraftName').value = 'Rowan';
+        nodes.get('.personaDraftUseCase').value = 'Review releases independently.';
+        nodes.get('.personaDraftName').listeners.input();
+        assert.equal(nodes.get('.personaDraftCreate').disabled, false);
+        nodes.get('.personaDraftCreate').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaDraftCreate');
+
+        const uiDraft = {
+          id: '12345678-1234-4123-8123-123456789abc',
+          name: 'Rowan',
+          useCase: 'Review releases independently.',
+          revision: 1,
+          currentCard: 0,
+          answers: Object.fromEntries(KEYS.map((key) => [key, ''])),
+        };
+        handlers.get('personaDraftStatus')({ draft: uiDraft, cards: CARDS });
+        assert.equal(nodes.get('.personaInterview').hidden, false);
+        assert.match(nodes.get('.personaInterviewQuestion').textContent, /beyond the name/);
+        assert.match(nodes.get('.personaInterviewExplanation').textContent, /name field identifies/);
+        nodes.get('.personaInterviewAnswer').value = 'A stable identity answer.';
+        nodes.get('.personaInterviewNext').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaDraftSave');
+        assert.equal(posts.at(-1).payload.changes.currentCard, 1);
+        assert.equal(posts.at(-1).payload.changes.answers.identity, 'A stable identity answer.');
+        handlers.get('personaDraftResult')({ ok: false, conflict: true, error: 'stale draft' });
+        assert.equal(nodes.get('.personaInterviewAnswer').value, 'A stable identity answer.');
+        assert.equal(nodes.get('.personaInterviewDrafts').textContent, 'REOPEN SAVED DRAFT');
+        nodes.get('.personaInterviewDrafts').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaDraftOpen');
+        assert.equal(posts.at(-1).payload.id, uiDraft.id);
+
         nodes.get('.personaWorkspaceChoose').listeners.click();
         assert.equal(posts.at(-1).type, 'personaWorkspaceChoose');
         assert.equal(nodes.get('.personaWorkspaceChoose').disabled, true);
@@ -344,7 +527,7 @@ function fakeBus() {
       }
     });
 
-    console.log(`PERSONA EXTENSION: ${passed}/18 passed`);
+    console.log(`PERSONA EXTENSION: ${passed}/24 passed`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }
