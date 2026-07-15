@@ -67,6 +67,46 @@
           '<button class="personaInterviewNext" type="button">SAVE &amp; NEXT</button>' +
         '</div>' +
       '</section>' +
+      '<section class="personaPreviewSetup" aria-live="polite" hidden>' +
+        '<div class="personaWorkspaceLabel">BLUEPRINT SETUP</div>' +
+        '<h3>Make the structured choices explicit.</h3>' +
+        '<p class="personaDraftHelp">The interview prose describes intent. These fields create the safe machine-readable contract; the builder will not guess permissions from prose.</p>' +
+        '<label class="personaFieldLabel" for="personaPreviewId">PERSONA ID — LOWERCASE KEBAB-CASE</label>' +
+        '<input class="personaPreviewId" id="personaPreviewId" maxlength="64" />' +
+        '<label class="personaFieldLabel" for="personaPreviewMode">ACTION POSTURE</label>' +
+        '<select class="personaPreviewMode" id="personaPreviewMode">' +
+          '<option value="">Choose a posture</option><option value="advisor">Advisor</option>' +
+          '<option value="assisted-operator">Assisted operator</option><option value="operator">Operator</option>' +
+          '<option value="automated-worker">Automated worker</option>' +
+        '</select>' +
+        '<div class="personaActionHeading">FOR EACH CATEGORY: ALLOWED · ASK · BLOCKED</div>' +
+        '<div class="personaActionGrid">' +
+          '<label>Read files<select class="personaAction-read_files"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+          '<label>Edit files<select class="personaAction-edit_files"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+          '<label>Run commands<select class="personaAction-run_commands"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+          '<label>Search web<select class="personaAction-search_web"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+          '<label>Use connectors<select class="personaAction-use_connectors"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+          '<label>Send externally<select class="personaAction-send_external"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+          '<label>Change system<select class="personaAction-change_system"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+          '<label>Delete data<select class="personaAction-delete_data"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
+        '</div>' +
+        '<div class="personaPreviewError"></div>' +
+        '<div class="personaInterviewActions"><button class="personaPreviewSetupBack" type="button">BACK TO INTERVIEW</button><button class="personaPreviewGenerate" type="button">GENERATE PREVIEW</button></div>' +
+      '</section>' +
+      '<section class="personaPreviewReview" aria-live="polite" hidden>' +
+        '<div class="personaWorkspaceLabel">BLUEPRINT + CANONICAL REVIEW</div>' +
+        '<div class="personaPreviewState"></div>' +
+        '<div class="personaInterviewSubhead">BLUEPRINT.JSON</div>' +
+        '<pre class="personaBlueprintPreview"></pre>' +
+        '<label class="personaFieldLabel" for="personaCanonicalPreview">AUTHORITATIVE CANONICAL MARKDOWN</label>' +
+        '<textarea class="personaCanonicalPreview" id="personaCanonicalPreview"></textarea>' +
+        '<div class="personaPreviewEditState"></div>' +
+        '<button class="personaCanonicalSave" type="button">SAVE CANONICAL EDIT</button>' +
+        '<button class="personaCanonicalRestore" type="button">RESTORE SAVED</button>' +
+        '<div class="personaSectionRegen"><select class="personaSectionSelect"></select><button class="personaSectionRegenerate" type="button">REGENERATE SECTION</button></div>' +
+        '<div class="personaPreviewError personaPreviewReviewError"></div>' +
+        '<div class="personaInterviewActions"><button class="personaPreviewDrafts" type="button">DRAFTS</button><button class="personaPreviewBack" type="button">BACK TO INTERVIEW</button><button class="personaPreviewRegenerateAll" type="button">REGENERATE ALL</button></div>' +
+      '</section>' +
       '<p class="personaBuilderFoot">This setting stays on this Apex installation. Model, provider, credentials, and runtime permissions stay outside the personas you build.</p>' +
     '</div>' +
     '<div class="dockTab" data-tab="personas">PERSONAS</div>';
@@ -105,6 +145,29 @@
   const interviewDrafts = pane.querySelector('.personaInterviewDrafts');
   const interviewBack = pane.querySelector('.personaInterviewBack');
   const interviewNext = pane.querySelector('.personaInterviewNext');
+  const previewSetup = pane.querySelector('.personaPreviewSetup');
+  const previewId = pane.querySelector('.personaPreviewId');
+  const previewMode = pane.querySelector('.personaPreviewMode');
+  const previewSetupBack = pane.querySelector('.personaPreviewSetupBack');
+  const previewGenerate = pane.querySelector('.personaPreviewGenerate');
+  const previewError = pane.querySelector('.personaPreviewError');
+  const previewReview = pane.querySelector('.personaPreviewReview');
+  const previewState = pane.querySelector('.personaPreviewState');
+  const blueprintPreview = pane.querySelector('.personaBlueprintPreview');
+  const canonicalPreview = pane.querySelector('.personaCanonicalPreview');
+  const previewEditState = pane.querySelector('.personaPreviewEditState');
+  const canonicalSave = pane.querySelector('.personaCanonicalSave');
+  const canonicalRestore = pane.querySelector('.personaCanonicalRestore');
+  const sectionSelect = pane.querySelector('.personaSectionSelect');
+  const sectionRegenerate = pane.querySelector('.personaSectionRegenerate');
+  const previewReviewError = pane.querySelector('.personaPreviewReviewError');
+  const previewDrafts = pane.querySelector('.personaPreviewDrafts');
+  const previewBack = pane.querySelector('.personaPreviewBack');
+  const previewRegenerateAll = pane.querySelector('.personaPreviewRegenerateAll');
+  const actionCategories = ['read_files', 'edit_files', 'run_commands', 'search_web',
+    'use_connectors', 'send_external', 'change_system', 'delete_data'];
+  const actionSelects = Object.fromEntries(actionCategories.map((category) =>
+    [category, pane.querySelector('.personaAction-' + category)]));
   let choosing = false;
   let foundationBusy = false;
   let foundationExists = false;
@@ -117,7 +180,13 @@
   let draftBusy = false;
   let draftConflict = false;
   let pendingDraftHome = false;
+  let pendingPreviewSetup = false;
   let deleteArmedId = null;
+  let suggestedPersonaId = '';
+  let previewBundle = null;
+  let previewBusy = false;
+  let previewConfirmOverwrite = false;
+  let canonicalDirty = false;
 
   function setChoosing(value) {
     choosing = value;
@@ -232,6 +301,8 @@
   function renderDraftList(message) {
     interviewCards = message.cards || interviewCards;
     interview.hidden = true;
+    previewSetup.hidden = true;
+    previewReview.hidden = true;
     draftHome.hidden = false;
     currentDraft = null;
     draftBusy = false;
@@ -283,6 +354,7 @@
   function renderDraftStatus(message) {
     currentDraft = message.draft;
     interviewCards = message.cards || interviewCards;
+    suggestedPersonaId = message.suggestedPersonaId || suggestedPersonaId;
     draftBusy = false;
     draftConflict = false;
     interviewDrafts.textContent = 'DRAFTS';
@@ -291,12 +363,19 @@
       ApexBus.post('personaDraftListGet', {});
       return;
     }
+    if (pendingPreviewSetup) {
+      pendingPreviewSetup = false;
+      showPreviewSetup();
+      return;
+    }
     const card = interviewCards[currentDraft.currentCard];
     if (!card) {
       interviewError.textContent = 'This draft points to an interview card that is unavailable.';
       return;
     }
     draftHome.hidden = true;
+    previewSetup.hidden = true;
+    previewReview.hidden = true;
     interview.hidden = false;
     interviewStep.textContent = `CARD ${currentDraft.currentCard + 1} OF ${interviewCards.length}`;
     interviewName.textContent = currentDraft.name;
@@ -347,12 +426,111 @@
     }
   }
 
+  function previewChoices() {
+    return {
+      personaId: previewId.value,
+      mode: previewMode.value,
+      actions: Object.fromEntries(actionCategories.map((category) =>
+        [category, actionSelects[category].value])),
+    };
+  }
+
+  function setPreviewSetupState() {
+    const choices = previewChoices();
+    previewGenerate.disabled = previewBusy || !choices.personaId || !choices.mode ||
+      Object.values(choices.actions).some((value) => !value);
+  }
+
+  function showPreviewSetup() {
+    interview.hidden = true;
+    draftHome.hidden = true;
+    previewReview.hidden = true;
+    previewSetup.hidden = false;
+    previewBusy = false;
+    previewConfirmOverwrite = false;
+    previewGenerate.textContent = 'GENERATE PREVIEW';
+    previewError.textContent = '';
+    const existing = currentDraft && currentDraft.preview;
+    previewId.value = existing ? existing.personaId : suggestedPersonaId;
+    previewMode.value = existing ? existing.blueprint.action_posture.mode : '';
+    for (const category of actionCategories) {
+      actionSelects[category].value = existing
+        ? existing.blueprint.action_posture.actions[category]
+        : '';
+    }
+    setPreviewSetupState();
+  }
+
+  function postPreviewGenerate(confirmedOverwrite) {
+    if (!currentDraft || previewBusy) return;
+    previewBusy = true;
+    setPreviewSetupState();
+    ApexBus.post('personaPreviewGenerate', {
+      id: currentDraft.id,
+      expectedRevision: currentDraft.revision,
+      ...previewChoices(),
+      confirmedOverwrite: Boolean(confirmedOverwrite),
+    });
+  }
+
+  function renderPreviewStatus(message) {
+    currentDraft = message.draft;
+    previewBundle = message.bundle;
+    previewBusy = false;
+    previewConfirmOverwrite = false;
+    draftHome.hidden = true;
+    interview.hidden = true;
+    previewSetup.hidden = true;
+    previewReview.hidden = false;
+    previewRegenerateAll.textContent = 'REGENERATE ALL';
+    blueprintPreview.textContent = JSON.stringify(previewBundle.blueprint, null, 2);
+    canonicalPreview.value = previewBundle.canonical;
+    canonicalDirty = false;
+    previewState.textContent = message.stale
+      ? 'Interview answers changed after this preview. Regenerate all to bring them in.'
+      : 'Blueprint and canonical are generated from the saved interview.';
+    previewState.dataset.tone = message.stale ? 'warning' : 'good';
+    previewEditState.textContent = previewBundle.canonicalDrift
+      ? 'Manual canonical edits differ from the generated blueprint hash. They will never be overwritten silently.'
+      : 'Canonical matches the generated blueprint hash.';
+    previewEditState.dataset.tone = previewBundle.canonicalDrift ? 'warning' : 'good';
+    canonicalSave.disabled = true;
+    previewReviewError.textContent = '';
+    sectionSelect.replaceChildren();
+    for (const card of interviewCards) {
+      const option = document.createElement('option');
+      option.value = card.key;
+      option.textContent = card.title;
+      sectionSelect.appendChild(option);
+    }
+  }
+
+  function renderPreviewResult(result) {
+    if (result.ok) return; // preview status follows every successful mutation
+    previewBusy = false;
+    if (result.needsConfirmation) {
+      previewConfirmOverwrite = true;
+      const target = previewReview.hidden ? previewGenerate : previewRegenerateAll;
+      target.textContent = 'CONFIRM REGENERATE ALL';
+      target.disabled = false;
+      const errorTarget = previewReview.hidden ? previewError : previewReviewError;
+      errorTarget.textContent = result.error;
+      return;
+    }
+    const errorTarget = previewReview.hidden ? previewError : previewReviewError;
+    errorTarget.textContent = result.error;
+    setPreviewSetupState();
+    canonicalSave.disabled = canonicalPreview.value === (previewBundle && previewBundle.canonical);
+  }
+
   ApexBus.on('personaWorkspaceStatus', renderWorkspace);
   ApexBus.on('personaFoundationStatus', renderFoundation);
   ApexBus.on('personaFoundationResult', renderFoundationResult);
   ApexBus.on('personaDraftList', renderDraftList);
   ApexBus.on('personaDraftStatus', renderDraftStatus);
   ApexBus.on('personaDraftResult', renderDraftResult);
+  ApexBus.on('personaPreviewStatus', renderPreviewStatus);
+  ApexBus.on('personaPreviewResult', renderPreviewResult);
   choose.addEventListener('click', () => {
     if (choosing) return;
     setChoosing(true);
@@ -409,8 +587,11 @@
   });
   interviewBack.addEventListener('click', () =>
     saveInterview(Math.max(0, currentDraft.currentCard - 1), false));
-  interviewNext.addEventListener('click', () =>
-    saveInterview(Math.min(interviewCards.length - 1, currentDraft.currentCard + 1), false));
+  interviewNext.addEventListener('click', () => {
+    const last = currentDraft.currentCard === interviewCards.length - 1;
+    pendingPreviewSetup = last;
+    saveInterview(last ? currentDraft.currentCard : currentDraft.currentCard + 1, false);
+  });
   interviewDrafts.addEventListener('click', () => {
     if (draftConflict) {
       draftConflict = false;
@@ -418,6 +599,81 @@
       return;
     }
     saveInterview(currentDraft.currentCard, true);
+  });
+  previewId.addEventListener('input', () => {
+    previewConfirmOverwrite = false;
+    previewGenerate.textContent = 'GENERATE PREVIEW';
+    setPreviewSetupState();
+  });
+  previewMode.addEventListener('change', setPreviewSetupState);
+  for (const select of Object.values(actionSelects))
+    select.addEventListener('change', setPreviewSetupState);
+  previewSetupBack.addEventListener('click', () =>
+    renderDraftStatus({ draft: currentDraft, cards: interviewCards, suggestedPersonaId }));
+  previewGenerate.addEventListener('click', () => {
+    if (previewGenerate.disabled) return;
+    postPreviewGenerate(previewConfirmOverwrite);
+  });
+  canonicalPreview.addEventListener('input', () => {
+    canonicalDirty = canonicalPreview.value !== previewBundle.canonical;
+    canonicalSave.disabled = !canonicalDirty;
+    previewEditState.textContent = canonicalDirty
+      ? 'Unsaved canonical edit. Save it before leaving or regenerating.'
+      : (previewBundle.canonicalDrift
+        ? 'Manual canonical edits differ from the generated blueprint hash.'
+        : 'Canonical matches the generated blueprint hash.');
+    previewEditState.dataset.tone = canonicalDirty || previewBundle.canonicalDrift ? 'warning' : 'good';
+  });
+  canonicalSave.addEventListener('click', () => {
+    if (!canonicalDirty || canonicalSave.disabled) return;
+    canonicalSave.disabled = true;
+    ApexBus.post('personaPreviewSaveCanonical', {
+      id: currentDraft.id,
+      expectedRevision: currentDraft.revision,
+      canonical: canonicalPreview.value,
+    });
+  });
+  canonicalRestore.addEventListener('click', () => {
+    canonicalPreview.value = previewBundle.canonical;
+    canonicalDirty = false;
+    canonicalSave.disabled = true;
+    previewEditState.textContent = previewBundle.canonicalDrift
+      ? 'Manual canonical edits differ from the generated blueprint hash.'
+      : 'Canonical matches the generated blueprint hash.';
+    previewEditState.dataset.tone = previewBundle.canonicalDrift ? 'warning' : 'good';
+    previewReviewError.textContent = '';
+  });
+  sectionRegenerate.addEventListener('click', () => {
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or discard the current canonical edit before regenerating a section.';
+      return;
+    }
+    ApexBus.post('personaPreviewRegenerateSection', {
+      id: currentDraft.id,
+      expectedRevision: currentDraft.revision,
+      key: sectionSelect.value,
+    });
+  });
+  previewRegenerateAll.addEventListener('click', () => {
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or discard the current canonical edit before regenerating everything.';
+      return;
+    }
+    postPreviewGenerate(previewConfirmOverwrite);
+  });
+  previewBack.addEventListener('click', () => {
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or discard the current canonical edit before returning to the interview.';
+      return;
+    }
+    renderDraftStatus({ draft: currentDraft, cards: interviewCards, suggestedPersonaId });
+  });
+  previewDrafts.addEventListener('click', () => {
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or discard the current canonical edit before leaving the preview.';
+      return;
+    }
+    ApexBus.post('personaDraftListGet', {});
   });
 
   ApexShell.registerDockPane(pane, { order: 20 });

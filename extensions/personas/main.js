@@ -8,6 +8,7 @@ const path = require('path');
 const foundation = require('./lib/foundation');
 const drafts = require('./lib/drafts');
 const { CARDS } = require('./lib/interview');
+const previewRenderer = require('./lib/render');
 
 const CONFIG_FILE = 'workspace.json';
 
@@ -146,6 +147,23 @@ function register(ctx) {
     });
     ctx.bus.post('toast', { text: 'Persona draft was not changed: ' + err.message });
   };
+  const postDraftStatus = (draft) => ctx.bus.post('personaDraftStatus', {
+    draft,
+    cards: CARDS,
+    suggestedPersonaId: previewRenderer.normalizePersonaId(draft.name),
+  });
+  const previewFailure = (action, err, extra) => {
+    ctx.bus.post('personaPreviewResult', { ok: false, action, error: err.message, ...(extra || {}) });
+    if (!extra || !extra.needsConfirmation)
+      ctx.bus.post('toast', { text: 'Persona preview was not changed: ' + err.message });
+  };
+  const currentWorkspaceDraft = (id) => {
+    const workspace = interviewWorkspace(ctx.stateDir);
+    const draft = drafts.readDraft(ctx.stateDir, id);
+    if (path.resolve(draft.workspace) !== path.resolve(workspace))
+      throw new Error('Draft belongs to a different workspace.');
+    return draft;
+  };
 
   ctx.bus.on('personaWorkspaceGet', publishStatus);
   ctx.bus.on('personaFoundationGet', publishFoundation);
@@ -205,26 +223,20 @@ function register(ctx) {
         useCase: message && message.useCase,
       });
       ctx.bus.post('personaDraftResult', { ok: true, action: 'created' });
-      ctx.bus.post('personaDraftStatus', { draft, cards: CARDS });
+      postDraftStatus(draft);
     } catch (err) { draftFailure('create', err); }
   });
 
   ctx.bus.on('personaDraftOpen', (message) => {
     try {
-      const workspace = interviewWorkspace(ctx.stateDir);
-      const draft = drafts.readDraft(ctx.stateDir, message && message.id);
-      if (path.resolve(draft.workspace) !== path.resolve(workspace))
-        throw new Error('Draft belongs to a different workspace.');
-      ctx.bus.post('personaDraftStatus', { draft, cards: CARDS });
+      const draft = currentWorkspaceDraft(message && message.id);
+      postDraftStatus(draft);
     } catch (err) { draftFailure('open', err); }
   });
 
   ctx.bus.on('personaDraftSave', (message) => {
     try {
-      const workspace = interviewWorkspace(ctx.stateDir);
-      const current = drafts.readDraft(ctx.stateDir, message && message.id);
-      if (path.resolve(current.workspace) !== path.resolve(workspace))
-        throw new Error('Draft belongs to a different workspace.');
+      const current = currentWorkspaceDraft(message && message.id);
       const draft = drafts.updateDraft(
         ctx.stateDir,
         current.id,
@@ -232,7 +244,7 @@ function register(ctx) {
         message && message.changes
       );
       ctx.bus.post('personaDraftResult', { ok: true, action: 'saved' });
-      ctx.bus.post('personaDraftStatus', { draft, cards: CARDS });
+      postDraftStatus(draft);
     } catch (err) { draftFailure('save', err); }
   });
 
@@ -245,6 +257,76 @@ function register(ctx) {
       ctx.bus.post('personaDraftResult', { ok: true, action: 'deleted' });
       publishDraftList();
     } catch (err) { draftFailure('delete', err); }
+  });
+
+  ctx.bus.on('personaPreviewGenerate', (message) => {
+    try {
+      const current = currentWorkspaceDraft(message && message.id);
+      const stale = current.preview &&
+        current.preview.sourceHash !== previewRenderer.draftSourceHash(current);
+      if (current.preview && (current.preview.canonicalDrift || stale) &&
+          (!message || message.confirmedOverwrite !== true)) {
+        const err = new Error('Regenerating everything will replace manual canonical edits or newer interview work.');
+        previewFailure('generate', err, { needsConfirmation: true });
+        return;
+      }
+      const bundle = previewRenderer.renderBundle(current, {
+        personaId: message && message.personaId,
+        mode: message && message.mode,
+        actions: message && message.actions,
+      });
+      const draft = drafts.updateDraft(ctx.stateDir, current.id,
+        message && message.expectedRevision, { preview: bundle });
+      ctx.bus.post('personaPreviewResult', { ok: true, action: 'generated' });
+      ctx.bus.post('personaPreviewStatus', { draft, bundle: draft.preview, stale: false });
+    } catch (err) { previewFailure('generate', err); }
+  });
+
+  ctx.bus.on('personaPreviewOpen', (message) => {
+    try {
+      const draft = currentWorkspaceDraft(message && message.id);
+      if (!draft.preview) throw new Error('Generate a preview first.');
+      ctx.bus.post('personaPreviewStatus', {
+        draft,
+        bundle: draft.preview,
+        stale: draft.preview.sourceHash !== previewRenderer.draftSourceHash(draft),
+      });
+    } catch (err) { previewFailure('open', err); }
+  });
+
+  ctx.bus.on('personaPreviewSaveCanonical', (message) => {
+    try {
+      const current = currentWorkspaceDraft(message && message.id);
+      const bundle = previewRenderer.withCanonicalEdit(current.preview, message && message.canonical);
+      const draft = drafts.updateDraft(ctx.stateDir, current.id,
+        message && message.expectedRevision, { preview: bundle });
+      ctx.bus.post('personaPreviewResult', { ok: true, action: 'canonical-saved' });
+      ctx.bus.post('personaPreviewStatus', {
+        draft,
+        bundle: draft.preview,
+        stale: draft.preview.sourceHash !== previewRenderer.draftSourceHash(draft),
+      });
+    } catch (err) { previewFailure('canonical-save', err); }
+  });
+
+  ctx.bus.on('personaPreviewRegenerateSection', (message) => {
+    try {
+      const current = currentWorkspaceDraft(message && message.id);
+      if (!current.preview) throw new Error('Generate a preview first.');
+      const key = message && message.key;
+      const area = current.preview.blueprint && current.preview.blueprint[key];
+      if (!area || typeof area.response !== 'string')
+        throw new Error('Blueprint section is unavailable: ' + key);
+      const bundle = previewRenderer.regenerateSection(current.preview, key, area.response);
+      const draft = drafts.updateDraft(ctx.stateDir, current.id,
+        message && message.expectedRevision, { preview: bundle });
+      ctx.bus.post('personaPreviewResult', { ok: true, action: 'section-regenerated' });
+      ctx.bus.post('personaPreviewStatus', {
+        draft,
+        bundle: draft.preview,
+        stale: draft.preview.sourceHash !== previewRenderer.draftSourceHash(draft),
+      });
+    } catch (err) { previewFailure('section-regenerate', err); }
   });
 }
 

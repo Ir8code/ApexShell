@@ -10,6 +10,8 @@ const persona = require('../extensions/personas/main');
 const foundation = require('../extensions/personas/lib/foundation');
 const draftStore = require('../extensions/personas/lib/drafts');
 const { CARDS, KEYS } = require('../extensions/personas/lib/interview');
+const previewRenderer = require('../extensions/personas/lib/render');
+const personaContract = require('../extensions/personas/lib/contract');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-persona-extension-'));
 let passed = 0;
@@ -33,6 +35,18 @@ function fakeBus() {
     posts,
     on(type, fn) { handlers.set(type, fn); },
     post(type, payload) { posts.push({ type, payload }); },
+  };
+}
+
+function completeAnswers(prefix = 'Complete') {
+  return Object.fromEntries(KEYS.map((key) => [key, `${prefix} answer for ${key}.`]));
+}
+
+function previewChoices(personaId = 'rowan') {
+  return {
+    personaId,
+    mode: 'operator',
+    actions: Object.fromEntries([...personaContract.ACTION_CATEGORIES].map((key) => [key, 'ask'])),
   };
 }
 
@@ -280,6 +294,10 @@ function fakeBus() {
       assert.equal(Object.values(draft.answers).every((answer) => answer === ''), true);
       assert.deepEqual(fs.readdirSync(path.join(stateDir, 'drafts')), [draft.id + '.json']);
       assert.equal(fs.existsSync(path.join(workspace, 'drafts')), false);
+      assert.throws(
+        () => draftStore.createDraft(stateDir, workspace, { name: 'Bad\nName', useCase: 'Reject.' }),
+        /single-line/
+      );
     });
 
     await gate('draft updates are revision-gated and preserve prior data on conflict', () => {
@@ -375,6 +393,162 @@ function fakeBus() {
       bus.handlers.get('personaDraftDelete')({ id: created.id, confirmed: true });
       assert.deepEqual(bus.posts.map((post) => post.type), ['personaDraftResult', 'personaDraftList']);
       assert.equal(fs.existsSync(draftStore.draftPath(stateDir, created.id)), false);
+    });
+
+    await gate('persona IDs normalize safely without preserving path syntax', () => {
+      assert.equal(previewRenderer.normalizePersonaId(' Rowan Release Reviewer '), 'rowan-release-reviewer');
+      assert.equal(previewRenderer.normalizePersonaId('../../Admin'), 'admin');
+      assert.equal(previewRenderer.normalizePersonaId('42 Answers'), 'persona-42-answers');
+      assert.equal(previewRenderer.normalizePersonaId('🔥'), 'persona');
+      assert.equal(personaContract.isSafePersonaId(previewRenderer.normalizePersonaId('A'.repeat(100))), true);
+    });
+
+    await gate('blueprint and canonical render as a contract-valid package', () => {
+      const workspace = path.join(scratch, 'preview-package-workspace');
+      const draft = {
+        name: 'Rowan "Release"',
+        useCase: 'Review releases: independently and precisely.',
+        answers: completeAnswers(),
+      };
+      const bundle = previewRenderer.renderBundle(draft, previewChoices('rowan-release'));
+      assert.equal(bundle.blueprint.canonical_hash, personaContract.hashCanonical(bundle.canonical));
+      assert.equal(bundle.canonicalDrift, false);
+      assert.match(bundle.canonical, /<!-- persona-builder:identity:start -->/);
+      const parsed = personaContract.parseFrontmatter(bundle.canonical);
+      assert.equal(parsed.attributes.name, 'rowan-release');
+      assert.equal(parsed.attributes.display_name, draft.name);
+
+      const paths = personaContract.packagePaths(workspace, 'rowan-release');
+      fs.mkdirSync(path.dirname(paths.memoryIndex), { recursive: true });
+      fs.writeFileSync(paths.canonical, bundle.canonical);
+      fs.writeFileSync(paths.blueprint, JSON.stringify(bundle.blueprint, null, 2));
+      fs.writeFileSync(paths.memoryIndex, '# Memory\n');
+      fs.writeFileSync(paths.scratchpad, '# Scratchpad\n');
+      const report = personaContract.validatePersonaPackage(workspace, 'rowan-release');
+      assert.equal(report.valid, true, JSON.stringify(report.errors));
+      assert.equal(report.warnings.length, 0, JSON.stringify(report.warnings));
+    });
+
+    await gate('preview generation refuses missing answers and action choices', () => {
+      const draft = { name: 'Rowan', useCase: 'Review.', answers: completeAnswers() };
+      draft.answers.boundaries = '';
+      assert.throws(
+        () => previewRenderer.renderBundle(draft, previewChoices()),
+        /Complete the interview card: Persona-Specific Boundaries/
+      );
+      draft.answers.boundaries = 'Read-only review boundary.';
+      const choices = previewChoices();
+      choices.actions.delete_data = '';
+      assert.throws(() => previewRenderer.renderBundle(draft, choices), /delete_data/);
+    });
+
+    await gate('manual canonical edits drift without false newline drift', () => {
+      const draft = { name: 'Rowan', useCase: 'Review.', answers: completeAnswers() };
+      const bundle = previewRenderer.renderBundle(draft, previewChoices());
+      const noFinalNewline = previewRenderer.withCanonicalEdit(bundle, bundle.canonical.trimEnd());
+      assert.equal(noFinalNewline.canonicalDrift, false);
+      const edited = previewRenderer.withCanonicalEdit(bundle,
+        bundle.canonical.replace('Complete answer for identity.', 'Manually refined identity.'));
+      assert.equal(edited.canonicalDrift, true);
+      assert.equal(edited.blueprint.canonical_hash, bundle.generatedCanonicalHash);
+    });
+
+    await gate('targeted regeneration preserves edits outside its marked section', () => {
+      const draft = { name: 'Rowan', useCase: 'Review.', answers: completeAnswers() };
+      const bundle = previewRenderer.renderBundle(draft, previewChoices());
+      const manual = previewRenderer.withCanonicalEdit(bundle,
+        bundle.canonical.replace('Complete answer for mission.', 'Manual mission stays.'));
+      const identityEdited = previewRenderer.withCanonicalEdit(manual,
+        manual.canonical.replace('Complete answer for identity.', 'Temporary identity edit.'));
+      const regenerated = previewRenderer.regenerateSection(
+        identityEdited,
+        'identity',
+        identityEdited.blueprint.identity.response
+      );
+      assert.match(regenerated.canonical, /Complete answer for identity\./);
+      assert.match(regenerated.canonical, /Manual mission stays\./);
+      assert.equal(regenerated.canonicalDrift, true);
+      assert.throws(
+        () => previewRenderer.regenerateSection(
+          { ...bundle, canonical: bundle.canonical.replace('<!-- persona-builder:identity:start -->', '') },
+          'identity',
+          bundle.blueprint.identity.response
+        ),
+        /Section markers are missing/
+      );
+    });
+
+    await gate('preview persists in a revisioned draft and rejects tampered drift state', () => {
+      const stateDir = path.join(scratch, 'preview-draft-state');
+      const workspace = path.join(scratch, 'preview-draft-workspace');
+      fs.mkdirSync(stateDir);
+      fs.mkdirSync(workspace);
+      const created = draftStore.createDraft(stateDir, workspace, { name: 'Rowan', useCase: 'Review.' });
+      const completed = draftStore.updateDraft(stateDir, created.id, created.revision,
+        { answers: completeAnswers() });
+      const bundle = previewRenderer.renderBundle(completed, previewChoices());
+      const withPreview = draftStore.updateDraft(stateDir, created.id, completed.revision,
+        { preview: bundle });
+      assert.equal(withPreview.preview.canonicalDrift, false);
+      const manual = previewRenderer.withCanonicalEdit(withPreview.preview,
+        withPreview.preview.canonical.replace('# Rowan', '# Rowan — reviewed'));
+      const saved = draftStore.updateDraft(stateDir, created.id, withPreview.revision,
+        { preview: manual });
+      assert.equal(saved.preview.canonicalDrift, true);
+
+      const file = draftStore.draftPath(stateDir, created.id);
+      const tampered = JSON.parse(fs.readFileSync(file, 'utf8'));
+      tampered.preview.canonicalDrift = false;
+      fs.writeFileSync(file, JSON.stringify(tampered));
+      assert.throws(() => draftStore.readDraft(stateDir, created.id), /drift state is invalid/);
+    });
+
+    await gate('preview bus requires confirmation before replacing manual edits', () => {
+      const bus = fakeBus();
+      const stateDir = path.join(scratch, 'preview-bus-state');
+      const workspace = path.join(scratch, 'preview-bus-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      let draft = draftStore.createDraft(stateDir, workspace, { name: 'Rowan', useCase: 'Review.' });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, { answers: completeAnswers() });
+      persona.register({ bus, stateDir, async pickDirectory() { return null; } });
+
+      bus.handlers.get('personaPreviewGenerate')({
+        id: draft.id,
+        expectedRevision: draft.revision,
+        ...previewChoices(),
+      });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaPreviewResult', 'personaPreviewStatus']);
+      draft = bus.posts[1].payload.draft;
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaPreviewSaveCanonical')({
+        id: draft.id,
+        expectedRevision: draft.revision,
+        canonical: draft.preview.canonical.replace('# Rowan', '# Rowan edited'),
+      });
+      draft = bus.posts[1].payload.draft;
+      assert.equal(draft.preview.canonicalDrift, true);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaPreviewGenerate')({
+        id: draft.id,
+        expectedRevision: draft.revision,
+        ...previewChoices(),
+      });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaPreviewResult']);
+      assert.equal(bus.posts[0].payload.needsConfirmation, true);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaPreviewGenerate')({
+        id: draft.id,
+        expectedRevision: draft.revision,
+        ...previewChoices(),
+        confirmedOverwrite: true,
+      });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaPreviewResult', 'personaPreviewStatus']);
+      assert.equal(bus.posts[1].payload.bundle.canonicalDrift, false);
     });
 
     await gate('renderer registers dock and drives workspace messages', () => {
@@ -517,6 +691,79 @@ function fakeBus() {
         assert.equal(posts.at(-1).type, 'personaDraftOpen');
         assert.equal(posts.at(-1).payload.id, uiDraft.id);
 
+        const completedUiDraft = {
+          ...uiDraft,
+          revision: 5,
+          currentCard: 5,
+          answers: completeAnswers('UI complete'),
+          preview: null,
+        };
+        handlers.get('personaDraftStatus')({
+          draft: completedUiDraft,
+          cards: CARDS,
+          suggestedPersonaId: 'rowan',
+        });
+        nodes.get('.personaInterviewAnswer').value = completedUiDraft.answers.action_posture;
+        nodes.get('.personaInterviewNext').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaDraftSave');
+        assert.equal(posts.at(-1).payload.changes.currentCard, 5);
+
+        const savedUiDraft = { ...completedUiDraft, revision: 6 };
+        handlers.get('personaDraftStatus')({
+          draft: savedUiDraft,
+          cards: CARDS,
+          suggestedPersonaId: 'rowan',
+        });
+        assert.equal(nodes.get('.personaPreviewSetup').hidden, false);
+        assert.equal(nodes.get('.personaPreviewId').value, 'rowan');
+        nodes.get('.personaPreviewMode').value = 'operator';
+        nodes.get('.personaPreviewMode').listeners.change();
+        for (const category of personaContract.ACTION_CATEGORIES) {
+          const select = nodes.get('.personaAction-' + category);
+          select.value = 'ask';
+          select.listeners.change();
+        }
+        assert.equal(nodes.get('.personaPreviewGenerate').disabled, false);
+        nodes.get('.personaPreviewGenerate').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaPreviewGenerate');
+        assert.equal(posts.at(-1).payload.actions.delete_data, 'ask');
+
+        const uiBundle = previewRenderer.renderBundle(savedUiDraft, previewChoices());
+        const previewUiDraft = { ...savedUiDraft, revision: 7, preview: uiBundle };
+        handlers.get('personaPreviewStatus')({ draft: previewUiDraft, bundle: uiBundle, stale: false });
+        assert.equal(nodes.get('.personaPreviewReview').hidden, false);
+        assert.match(nodes.get('.personaBlueprintPreview').textContent, /"canonical_hash"/);
+        assert.match(nodes.get('.personaCanonicalPreview').value, /# Rowan/);
+        nodes.get('.personaCanonicalPreview').value = uiBundle.canonical.replace('# Rowan', '# Rowan edited');
+        nodes.get('.personaCanonicalPreview').listeners.input();
+        assert.equal(nodes.get('.personaCanonicalSave').disabled, false);
+        nodes.get('.personaCanonicalRestore').listeners.click();
+        assert.equal(nodes.get('.personaCanonicalPreview').value, uiBundle.canonical);
+        assert.equal(nodes.get('.personaCanonicalSave').disabled, true);
+        nodes.get('.personaCanonicalPreview').value = uiBundle.canonical.replace('# Rowan', '# Rowan edited');
+        nodes.get('.personaCanonicalPreview').listeners.input();
+        nodes.get('.personaCanonicalSave').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaPreviewSaveCanonical');
+        assert.equal(posts.at(-1).payload.expectedRevision, 7);
+
+        const manualUiBundle = previewRenderer.withCanonicalEdit(uiBundle,
+          uiBundle.canonical.replace('# Rowan', '# Rowan edited'));
+        handlers.get('personaPreviewStatus')({
+          draft: { ...previewUiDraft, revision: 8, preview: manualUiBundle },
+          bundle: manualUiBundle,
+          stale: false,
+        });
+        nodes.get('.personaPreviewRegenerateAll').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaPreviewGenerate');
+        handlers.get('personaPreviewResult')({
+          ok: false,
+          needsConfirmation: true,
+          error: 'Regeneration replaces manual work.',
+        });
+        assert.equal(nodes.get('.personaPreviewRegenerateAll').textContent, 'CONFIRM REGENERATE ALL');
+        nodes.get('.personaPreviewRegenerateAll').listeners.click();
+        assert.equal(posts.at(-1).payload.confirmedOverwrite, true);
+
         nodes.get('.personaWorkspaceChoose').listeners.click();
         assert.equal(posts.at(-1).type, 'personaWorkspaceChoose');
         assert.equal(nodes.get('.personaWorkspaceChoose').disabled, true);
@@ -527,7 +774,7 @@ function fakeBus() {
       }
     });
 
-    console.log(`PERSONA EXTENSION: ${passed}/24 passed`);
+    console.log(`PERSONA EXTENSION: ${passed}/31 passed`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

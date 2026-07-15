@@ -53,10 +53,13 @@
   border-radius: 8px; background: transparent; color: var(--dim); font-size: 9.5px;
   font-weight: 700; letter-spacing: .1em; cursor: pointer; }
 .personaFoundationConflict button:hover { color: var(--text); border-color: var(--accent); }
-.personaDraftHome, .personaInterview { width: min(820px, 100%); margin-top: 32px;
+.personaDraftHome, .personaInterview, .personaPreviewSetup, .personaPreviewReview {
+  width: min(900px, 100%); margin-top: 32px;
   padding-top: 28px; border-top: 1px solid var(--edge); }
-.personaDraftHome[hidden], .personaInterview[hidden] { display: none; }
-.personaDraftHome h3, .personaInterview h3 { color: var(--text); font-size: 20px;
+.personaDraftHome[hidden], .personaInterview[hidden], .personaPreviewSetup[hidden],
+.personaPreviewReview[hidden] { display: none; }
+.personaDraftHome h3, .personaInterview h3, .personaPreviewSetup h3 {
+  color: var(--text); font-size: 20px;
   font-weight: 500; margin-top: 10px; }
 .personaDraftHelp { width: min(680px, 100%); color: var(--dim); font-size: 11.5px;
   line-height: 1.55; margin-top: 8px; }
@@ -110,6 +113,53 @@
   margin-top: 9px; }
 .personaInterviewActions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .personaInterviewActions button { margin-left: 0; }
+.personaPreviewId, .personaPreviewMode, .personaActionGrid select, .personaSectionSelect {
+  margin-top: 7px; border: 1px solid var(--edge); border-radius: 8px; background: var(--surface);
+  color: var(--text); font: 11.5px "Segoe UI", sans-serif; padding: 8px 10px; }
+.personaPreviewId { width: min(420px, 100%); user-select: text; }
+.personaPreviewMode { display: block; width: min(320px, 100%); }
+.personaActionHeading { color: var(--faint); font-size: 9px; font-weight: 700;
+  letter-spacing: .18em; margin-top: 22px; }
+.personaActionGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px; margin-top: 10px; }
+.personaActionGrid label { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; color: var(--dim); font-size: 11px; }
+.personaActionGrid select { width: 120px; margin-top: 0; }
+.personaPreviewError, .personaPreviewEditState, .personaPreviewState { color: var(--faint);
+  font-size: 11px; line-height: 1.5; margin-top: 10px; }
+.personaPreviewError, .personaPreviewEditState[data-tone="warning"],
+.personaPreviewState[data-tone="warning"] { color: var(--warning); }
+.personaPreviewEditState[data-tone="good"], .personaPreviewState[data-tone="good"] { color: var(--good); }
+.personaPreviewGenerate, .personaCanonicalSave, .personaSectionRegenerate,
+.personaPreviewRegenerateAll { padding: 9px 13px; border: 1px solid var(--accent);
+  border-radius: 8px; background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text); font-size: 9.5px; font-weight: 700; letter-spacing: .1em;
+  cursor: pointer; }
+.personaPreviewSetupBack, .personaPreviewDrafts, .personaPreviewBack { padding: 9px 12px;
+  border: 1px solid var(--edge); border-radius: 8px; background: transparent;
+  color: var(--dim); font-size: 9.5px; font-weight: 700; letter-spacing: .1em;
+  cursor: pointer; }
+.personaBlueprintPreview { max-height: 330px; overflow: auto; margin-top: 9px;
+  padding: 14px 16px; border: 1px solid var(--edge); border-radius: 10px;
+  background: var(--surface); color: var(--dim); font: 11px/1.5 Consolas, monospace;
+  white-space: pre-wrap; user-select: text; }
+.personaCanonicalPreview { display: block; width: 100%; min-height: 420px; resize: vertical;
+  margin-top: 8px; padding: 14px 16px; border: 1px solid var(--edge); border-radius: 10px;
+  background: var(--surface); color: var(--text); font: 11.5px/1.55 Consolas, monospace;
+  user-select: text; }
+.personaCanonicalPreview:focus { border-color: var(--accent); }
+.personaCanonicalSave { margin-top: 10px; }
+.personaCanonicalRestore { margin: 10px 0 0 8px; padding: 9px 12px;
+  border: 1px solid var(--edge); border-radius: 8px; background: transparent;
+  color: var(--dim); font-size: 9.5px; font-weight: 700; letter-spacing: .1em;
+  cursor: pointer; }
+.personaCanonicalRestore:hover { color: var(--text); border-color: var(--accent); }
+.personaCanonicalSave:disabled, .personaPreviewGenerate:disabled { opacity: .4; cursor: default; }
+.personaSectionRegen { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+.personaSectionSelect { flex: 1; margin-top: 0; }
+@media (max-width: 720px) {
+  .personaActionGrid { grid-template-columns: 1fr; }
+}
 .personaBuilderFoot { width: min(680px, 100%); color: var(--faint); font-size: 10.5px;
   line-height: 1.55; margin-top: auto; padding-top: 28px; }
 

@@ -6,6 +6,15 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { KEYS } = require('./interview');
+const {
+  ACTION_CATEGORIES,
+  ACTION_DECISIONS,
+  ACTION_POSTURES,
+  BLUEPRINT_AREAS,
+  findRuntimeKeys,
+  hashCanonical,
+  isSafePersonaId,
+} = require('./contract');
 
 const SCHEMA = 1;
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -44,6 +53,43 @@ function cleanText(value, label, max) {
   return text;
 }
 
+function validatePreview(value) {
+  if (value === null) return;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Draft preview is invalid.');
+  if (!isSafePersonaId(value.personaId)) throw new Error('Draft preview persona ID is invalid.');
+  if (typeof value.canonical !== 'string' || !value.canonical.trim() ||
+      Buffer.byteLength(value.canonical, 'utf8') > 128 * 1024)
+    throw new Error('Draft preview canonical is invalid.');
+  if (typeof value.generatedCanonicalHash !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(value.generatedCanonicalHash))
+    throw new Error('Draft preview canonical hash is invalid.');
+  if (typeof value.sourceHash !== 'string' || !/^[0-9a-f]{64}$/.test(value.sourceHash))
+    throw new Error('Draft preview source hash is invalid.');
+  const drift = hashCanonical(value.canonical) !== value.generatedCanonicalHash;
+  if (value.canonicalDrift !== drift) throw new Error('Draft preview drift state is invalid.');
+  const blueprint = value.blueprint;
+  if (!blueprint || typeof blueprint !== 'object' || Array.isArray(blueprint) ||
+      blueprint.schema_version !== 1 || blueprint.canonical_hash !== value.generatedCanonicalHash ||
+      blueprint.persona_id !== value.personaId)
+    throw new Error('Draft preview blueprint is invalid.');
+  for (const area of BLUEPRINT_AREAS) {
+    if (!blueprint[area] || typeof blueprint[area] !== 'object' || Array.isArray(blueprint[area]))
+      throw new Error('Draft preview blueprint area is invalid: ' + area);
+  }
+  if (!ACTION_POSTURES.has(blueprint.action_posture.mode))
+    throw new Error('Draft preview action posture is invalid.');
+  const actions = blueprint.action_posture.actions;
+  if (!actions || typeof actions !== 'object' || Array.isArray(actions))
+    throw new Error('Draft preview action decisions are invalid.');
+  for (const category of ACTION_CATEGORIES) {
+    if (!ACTION_DECISIONS.has(actions[category]))
+      throw new Error('Draft preview action decision is invalid: ' + category);
+  }
+  if (findRuntimeKeys(blueprint).length)
+    throw new Error('Draft preview blueprint contains runtime-only fields.');
+}
+
 function atomicWrite(stateDir, file, value) {
   ensureDraftsDir(stateDir, true);
   const temporary = path.join(
@@ -67,8 +113,12 @@ function validateDraft(value, expectedId) {
     throw new Error('Draft ID does not match its file.');
   if (typeof value.workspace !== 'string' || !path.isAbsolute(value.workspace))
     throw new Error('Draft workspace must be absolute.');
-  cleanText(value.name, 'Persona name', 80);
-  cleanText(value.useCase, 'Use case', 240);
+  const cleanName = cleanText(value.name, 'Persona name', 80);
+  const cleanUseCase = cleanText(value.useCase, 'Use case', 240);
+  if (value.name !== cleanName || /[\r\n]/.test(value.name))
+    throw new Error('Persona name must be trimmed, single-line text.');
+  if (value.useCase !== cleanUseCase)
+    throw new Error('Use case must not have leading or trailing whitespace.');
   if (!Number.isInteger(value.revision) || value.revision < 1)
     throw new Error('Draft revision is invalid.');
   if (!Number.isInteger(value.currentCard) || value.currentCard < 0 || value.currentCard >= KEYS.length)
@@ -82,6 +132,10 @@ function validateDraft(value, expectedId) {
     if (typeof value.answers[key] !== 'string' || value.answers[key].length > 12000)
       throw new Error(`Draft answer ${key} is invalid.`);
   }
+  for (const key of Object.keys(value.answers)) {
+    if (!KEYS.includes(key)) throw new Error('Draft contains an unknown answer: ' + key);
+  }
+  validatePreview(value.preview === undefined ? null : value.preview);
   return value;
 }
 
@@ -112,6 +166,7 @@ function createDraft(stateDir, workspace, starter) {
     revision: 1,
     currentCard: 0,
     answers: Object.fromEntries(KEYS.map((key) => [key, ''])),
+    preview: null,
     createdAt: now,
     updatedAt: now,
   };
@@ -147,6 +202,12 @@ function updateDraft(stateDir, id, expectedRevision, changes) {
         throw new Error(`Draft answer ${key} is invalid.`);
       next.answers[key] = value;
     }
+  }
+  if (changes && Object.prototype.hasOwnProperty.call(changes, 'preview')) {
+    validatePreview(changes.preview);
+    next.preview = changes.preview === null
+      ? null
+      : JSON.parse(JSON.stringify(changes.preview));
   }
   next.revision += 1;
   next.updatedAt = new Date().toISOString();
@@ -194,4 +255,5 @@ module.exports = {
   updateDraft,
   listDrafts,
   deleteDraft,
+  validatePreview,
 };
