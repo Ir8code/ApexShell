@@ -5,6 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const foundation = require('./lib/foundation');
 
 const CONFIG_FILE = 'workspace.json';
 
@@ -85,6 +86,23 @@ function workspaceStatus(stateDir) {
   return status;
 }
 
+function selectedWorkspace(stateDir) {
+  const saved = readWorkspaceConfig(stateDir);
+  if (saved.error) throw new Error(saved.error);
+  if (!saved.workspace) throw new Error('Choose a persona workspace first.');
+  return saved.workspace;
+}
+
+function foundationStatus(stateDir) {
+  let workspace = null;
+  try {
+    workspace = selectedWorkspace(stateDir);
+    return { ...foundation.inspectFoundation(workspace), error: null };
+  } catch (err) {
+    return { workspace, exists: false, content: '', revision: null, error: err.message };
+  }
+}
+
 function register(ctx) {
   if (!ctx || !ctx.bus || typeof ctx.bus.on !== 'function' || typeof ctx.bus.post !== 'function')
     throw new Error('Persona Builder requires the extension bus.');
@@ -93,8 +111,11 @@ function register(ctx) {
   configPath(ctx.stateDir); // validate once at load, before registering handlers
 
   const publishStatus = () => ctx.bus.post('personaWorkspaceStatus', workspaceStatus(ctx.stateDir));
+  const publishFoundation = () =>
+    ctx.bus.post('personaFoundationStatus', foundationStatus(ctx.stateDir));
 
   ctx.bus.on('personaWorkspaceGet', publishStatus);
+  ctx.bus.on('personaFoundationGet', publishFoundation);
   ctx.bus.on('personaWorkspaceChoose', async () => {
     try {
       const current = readWorkspaceConfig(ctx.stateDir).workspace;
@@ -109,6 +130,39 @@ function register(ctx) {
       publishStatus();
     }
   });
+
+  ctx.bus.on('personaFoundationCreate', (message) => {
+    try {
+      foundation.createFoundation(selectedWorkspace(ctx.stateDir), message && message.content);
+      ctx.bus.post('personaFoundationResult', { ok: true, action: 'created' });
+      publishFoundation();
+      publishStatus();
+    } catch (err) {
+      ctx.bus.post('personaFoundationResult', { ok: false, action: 'create', error: err.message });
+      ctx.bus.post('toast', { text: 'Shared foundation was not created: ' + err.message });
+    }
+  });
+
+  ctx.bus.on('personaFoundationSave', (message) => {
+    try {
+      foundation.saveFoundation(
+        selectedWorkspace(ctx.stateDir),
+        message && message.content,
+        message && message.expectedRevision
+      );
+      ctx.bus.post('personaFoundationResult', { ok: true, action: 'saved' });
+      publishFoundation();
+      publishStatus();
+    } catch (err) {
+      ctx.bus.post('personaFoundationResult', {
+        ok: false,
+        action: 'save',
+        conflict: err.code === 'FOUNDATION_CONFLICT',
+        error: err.message,
+      });
+      ctx.bus.post('toast', { text: 'Shared foundation was not saved: ' + err.message });
+    }
+  });
 }
 
 module.exports = {
@@ -116,4 +170,6 @@ module.exports = {
   readWorkspaceConfig,
   writeWorkspaceConfig,
   workspaceStatus,
+  selectedWorkspace,
+  foundationStatus,
 };

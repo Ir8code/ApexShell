@@ -7,6 +7,7 @@ const os = require('os');
 const path = require('path');
 const { stateDirFor, chooseDirectory } = require('../main/extensionServices');
 const persona = require('../extensions/personas/main');
+const foundation = require('../extensions/personas/lib/foundation');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-persona-extension-'));
 let passed = 0;
@@ -146,6 +147,103 @@ function fakeBus() {
       assert.match(bus.posts[0].payload.text, /picker failed/);
     });
 
+    await gate('portable foundation default contains only shared rules', () => {
+      assert.match(foundation.DEFAULT_FOUNDATION, /^# Shared Foundation/m);
+      assert.match(foundation.DEFAULT_FOUNDATION, /user alone creates or permanently changes a persona/i);
+      assert.match(foundation.DEFAULT_FOUNDATION, /provider and model binding outside persona identity/i);
+      assert.match(foundation.DEFAULT_FOUNDATION, /structured evidence packets/i);
+      assert.doesNotMatch(foundation.DEFAULT_FOUNDATION, /Mox|Jinx|Clio|Sable|Keith|Matt/);
+    });
+
+    await gate('foundation creation is explicit, no-clobber, and structural', () => {
+      const workspace = path.join(scratch, 'foundation-create-workspace');
+      fs.mkdirSync(workspace);
+      const created = foundation.createFoundation(workspace, '# Shared\r\n\r\nRule');
+      assert.equal(created.exists, true);
+      assert.equal(created.content, '# Shared\n\nRule\n');
+      assert.equal(created.revision, foundation.revisionOf(created.content));
+      assert.equal(fs.statSync(path.join(workspace, 'personas')).isDirectory(), true);
+      assert.throws(
+        () => foundation.createFoundation(workspace, '# Replacement\n'),
+        /will not overwrite/
+      );
+      assert.equal(fs.readFileSync(path.join(workspace, 'foundation.md'), 'utf8'), created.content);
+    });
+
+    await gate('invalid foundation content has no workspace side effects', () => {
+      const workspace = path.join(scratch, 'foundation-invalid-workspace');
+      fs.mkdirSync(workspace);
+      assert.throws(() => foundation.createFoundation(workspace, '   '), /cannot be empty/);
+      assert.equal(fs.existsSync(path.join(workspace, 'foundation.md')), false);
+      assert.equal(fs.existsSync(path.join(workspace, 'personas')), false);
+    });
+
+    await gate('foundation save rejects stale revisions without losing either edit', () => {
+      const workspace = path.join(scratch, 'foundation-conflict-workspace');
+      fs.mkdirSync(workspace);
+      const created = foundation.createFoundation(workspace, '# Original\n');
+      fs.writeFileSync(path.join(workspace, 'foundation.md'), '# Outside edit\n');
+      assert.throws(
+        () => foundation.saveFoundation(workspace, '# Builder edit\n', created.revision),
+        /changed since it was loaded/
+      );
+      assert.equal(fs.readFileSync(path.join(workspace, 'foundation.md'), 'utf8'), '# Outside edit\n');
+      const refreshed = foundation.inspectFoundation(workspace);
+      const saved = foundation.saveFoundation(workspace, '# Accepted edit', refreshed.revision);
+      assert.equal(saved.content, '# Accepted edit\n');
+      assert.deepEqual(fs.readdirSync(workspace).sort(), ['foundation.md', 'personas']);
+    });
+
+    await gate('foundation creation rejects a linked personas directory', () => {
+      const workspace = path.join(scratch, 'foundation-link-workspace');
+      const outside = path.join(scratch, 'foundation-link-outside');
+      fs.mkdirSync(workspace);
+      fs.mkdirSync(outside);
+      fs.symlinkSync(outside, path.join(workspace, 'personas'), process.platform === 'win32' ? 'junction' : 'dir');
+      assert.throws(
+        () => foundation.createFoundation(workspace, '# Shared\n'),
+        /symbolic link/
+      );
+      assert.equal(fs.existsSync(path.join(workspace, 'foundation.md')), false);
+    });
+
+    await gate('foundation bus create publishes result and refreshed state', () => {
+      const bus = fakeBus();
+      const stateDir = path.join(scratch, 'foundation-bus-state');
+      const workspace = path.join(scratch, 'foundation-bus-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      persona.register({ bus, stateDir, async pickDirectory() { return null; } });
+      bus.handlers.get('personaFoundationCreate')({ content: foundation.DEFAULT_FOUNDATION });
+      assert.deepEqual(
+        bus.posts.map((post) => post.type),
+        ['personaFoundationResult', 'personaFoundationStatus', 'personaWorkspaceStatus']
+      );
+      assert.deepEqual(bus.posts[0].payload, { ok: true, action: 'created' });
+      assert.equal(bus.posts[1].payload.exists, true);
+      assert.equal(bus.posts[2].payload.foundationReady, true);
+    });
+
+    await gate('foundation bus conflict reports failure without replacing editor state', () => {
+      const bus = fakeBus();
+      const stateDir = path.join(scratch, 'foundation-conflict-state');
+      const workspace = path.join(scratch, 'foundation-conflict-bus-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      const created = foundation.createFoundation(workspace, '# Original\n');
+      fs.writeFileSync(path.join(workspace, 'foundation.md'), '# Outside\n');
+      persona.register({ bus, stateDir, async pickDirectory() { return null; } });
+      bus.handlers.get('personaFoundationSave')({
+        content: '# Builder\n',
+        expectedRevision: created.revision,
+      });
+      assert.deepEqual(bus.posts.map((post) => post.type), ['personaFoundationResult', 'toast']);
+      assert.equal(bus.posts[0].payload.ok, false);
+      assert.equal(bus.posts[0].payload.conflict, true);
+      assert.match(bus.posts[0].payload.error, /changed since it was loaded/);
+      assert.equal(fs.readFileSync(path.join(workspace, 'foundation.md'), 'utf8'), '# Outside\n');
+    });
+
     await gate('renderer registers dock and drives workspace messages', () => {
       const nodes = new Map();
       const pane = {
@@ -160,6 +258,8 @@ function fakeBus() {
             nodes.set(selector, {
               dataset: {},
               textContent: '',
+              value: '',
+              hidden: false,
               disabled: false,
               listeners: {},
               addEventListener(type, fn) { this.listeners[type] = fn; },
@@ -198,6 +298,41 @@ function fakeBus() {
         });
         assert.equal(nodes.get('.personaWorkspaceState').textContent, 'Ready for setup');
         assert.match(nodes.get('.personaWorkspaceChecks').textContent, /2 persona packages/);
+        assert.equal(posts.at(-1).type, 'personaFoundationGet');
+
+        handlers.get('personaFoundationStatus')({
+          workspace: path.join(scratch, 'ui-workspace'),
+          exists: false,
+          content: foundation.DEFAULT_FOUNDATION,
+          revision: null,
+          error: null,
+        });
+        assert.equal(nodes.get('.personaFoundationCard').hidden, false);
+        assert.equal(nodes.get('.personaFoundationAction').textContent, 'CREATE FOUNDATION');
+        nodes.get('.personaFoundationAction').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaFoundationCreate');
+        assert.equal(posts.at(-1).payload.content, foundation.DEFAULT_FOUNDATION);
+
+        handlers.get('personaFoundationResult')({ ok: false, conflict: true, error: 'conflict' });
+        assert.match(nodes.get('.personaFoundationState').textContent, /Not saved/);
+        assert.equal(nodes.get('.personaFoundationEditor').value, foundation.DEFAULT_FOUNDATION);
+        assert.equal(nodes.get('.personaFoundationConflict').hidden, false);
+
+        nodes.get('.personaFoundationKeepEdit').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaFoundationGet');
+        handlers.get('personaFoundationStatus')({
+          workspace: path.join(scratch, 'ui-workspace'),
+          exists: true,
+          content: '# Outside edit\n',
+          revision: 'fresh-revision',
+          error: null,
+        });
+        assert.equal(nodes.get('.personaFoundationEditor').value, foundation.DEFAULT_FOUNDATION);
+        assert.match(nodes.get('.personaFoundationState').textContent, /edit is preserved/);
+        assert.equal(nodes.get('.personaFoundationAction').disabled, false);
+        nodes.get('.personaFoundationAction').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaFoundationSave');
+        assert.equal(posts.at(-1).payload.expectedRevision, 'fresh-revision');
 
         nodes.get('.personaWorkspaceChoose').listeners.click();
         assert.equal(posts.at(-1).type, 'personaWorkspaceChoose');
@@ -209,7 +344,7 @@ function fakeBus() {
       }
     });
 
-    console.log(`PERSONA EXTENSION: ${passed}/11 passed`);
+    console.log(`PERSONA EXTENSION: ${passed}/18 passed`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }
