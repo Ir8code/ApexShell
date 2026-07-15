@@ -11,9 +11,11 @@ const {
   ACTION_DECISIONS,
   ACTION_POSTURES,
   BLUEPRINT_AREAS,
+  ACCESS_MODES,
   findRuntimeKeys,
   hashCanonical,
   isSafePersonaId,
+  parseFrontmatter,
 } = require('./contract');
 
 const SCHEMA = 1;
@@ -88,16 +90,41 @@ function validatePreview(value) {
   }
   if (findRuntimeKeys(blueprint).length)
     throw new Error('Draft preview blueprint contains runtime-only fields.');
+  const collaborationEnabled = value.collaboration !== null && value.collaboration !== undefined;
+  const modules = parseFrontmatter(value.canonical).attributes.modules || [];
+  if (!Array.isArray(modules))
+    throw new Error('Draft preview canonical modules must be a list.');
+  if (collaborationEnabled !== modules.includes('collaboration'))
+    throw new Error('Draft preview collaboration does not match canonical modules.');
+  if (collaborationEnabled) {
+    const collaboration = value.collaboration;
+    if (!collaboration || typeof collaboration !== 'object' || Array.isArray(collaboration) ||
+        collaboration.schema_version !== 1 || !ACCESS_MODES.has(collaboration.default_access))
+      throw new Error('Draft preview collaboration contract is invalid.');
+    for (const field of ['capabilities', 'accepts', 'emits']) {
+      if (!Array.isArray(collaboration[field]) || !collaboration[field].length ||
+          collaboration[field].some((item) => typeof item !== 'string' || !item.trim()))
+        throw new Error('Draft preview collaboration field is invalid: ' + field);
+      if (collaboration[field].length > 100 ||
+          collaboration[field].some((item) => item.trim().length > 240))
+        throw new Error('Draft preview collaboration field is too large: ' + field);
+    }
+    if (findRuntimeKeys(collaboration).length)
+      throw new Error('Draft preview collaboration contains runtime-only fields.');
+  }
 }
 
 function atomicWrite(stateDir, file, value) {
   ensureDraftsDir(stateDir, true);
+  const serialized = JSON.stringify(value, null, 2) + '\n';
+  if (Buffer.byteLength(serialized, 'utf8') > MAX_DRAFT_BYTES)
+    throw new Error('Draft exceeds the 256 KB limit.');
   const temporary = path.join(
     path.dirname(file),
     `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`
   );
   try {
-    fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n', {
+    fs.writeFileSync(temporary, serialized, {
       encoding: 'utf8',
       flag: 'wx',
     });

@@ -90,6 +90,15 @@
           '<label>Change system<select class="personaAction-change_system"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
           '<label>Delete data<select class="personaAction-delete_data"><option value="">Choose</option><option>allowed</option><option>ask</option><option>blocked</option></select></label>' +
         '</div>' +
+        '<label class="personaCollaborationToggle"><input class="personaCollaborationEnabled" type="checkbox" /> ADD A COLLABORATION CONTRACT</label>' +
+        '<div class="personaCollaborationEditor" hidden>' +
+          '<p class="personaCollaborationHelp">Default access controls whether a teammate receives this persona’s handoff material read-only or may return edits; it is not public/private visibility. Capabilities are work this persona can provide, accepts are structured inputs it can consume, and emits are the artifacts it returns.</p>' +
+          '<label class="personaFieldLabel" for="personaCollaborationAccess">DEFAULT HANDOFF ACCESS</label>' +
+          '<select class="personaCollaborationAccess" id="personaCollaborationAccess"><option value="">Choose access</option><option value="read-only">Read-only</option><option value="read-write">Read-write</option></select>' +
+          '<label class="personaFieldLabel" for="personaCapabilities">CAPABILITIES — ONE PER LINE</label><textarea class="personaCapabilities" id="personaCapabilities" maxlength="12000"></textarea>' +
+          '<label class="personaFieldLabel" for="personaAccepts">ACCEPTS — ONE INPUT TYPE PER LINE</label><textarea class="personaAccepts" id="personaAccepts" maxlength="12000"></textarea>' +
+          '<label class="personaFieldLabel" for="personaEmits">EMITS — ONE OUTPUT TYPE PER LINE</label><textarea class="personaEmits" id="personaEmits" maxlength="12000"></textarea>' +
+        '</div>' +
         '<div class="personaPreviewError"></div>' +
         '<div class="personaInterviewActions"><button class="personaPreviewSetupBack" type="button">BACK TO INTERVIEW</button><button class="personaPreviewGenerate" type="button">GENERATE PREVIEW</button></div>' +
       '</section>' +
@@ -98,6 +107,7 @@
         '<div class="personaPreviewState"></div>' +
         '<div class="personaInterviewSubhead">BLUEPRINT.JSON</div>' +
         '<pre class="personaBlueprintPreview"></pre>' +
+        '<div class="personaCollaborationPreviewWrap" hidden><div class="personaInterviewSubhead">COLLABORATION.JSON</div><pre class="personaCollaborationPreview"></pre></div>' +
         '<label class="personaFieldLabel" for="personaCanonicalPreview">AUTHORITATIVE CANONICAL MARKDOWN</label>' +
         '<textarea class="personaCanonicalPreview" id="personaCanonicalPreview"></textarea>' +
         '<div class="personaPreviewEditState"></div>' +
@@ -168,6 +178,14 @@
     'use_connectors', 'send_external', 'change_system', 'delete_data'];
   const actionSelects = Object.fromEntries(actionCategories.map((category) =>
     [category, pane.querySelector('.personaAction-' + category)]));
+  const collaborationEnabled = pane.querySelector('.personaCollaborationEnabled');
+  const collaborationEditor = pane.querySelector('.personaCollaborationEditor');
+  const collaborationAccess = pane.querySelector('.personaCollaborationAccess');
+  const collaborationCapabilities = pane.querySelector('.personaCapabilities');
+  const collaborationAccepts = pane.querySelector('.personaAccepts');
+  const collaborationEmits = pane.querySelector('.personaEmits');
+  const collaborationPreviewWrap = pane.querySelector('.personaCollaborationPreviewWrap');
+  const collaborationPreview = pane.querySelector('.personaCollaborationPreview');
   let choosing = false;
   let foundationBusy = false;
   let foundationExists = false;
@@ -427,18 +445,29 @@
   }
 
   function previewChoices() {
+    const lines = (value) => [...new Set(value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean))];
     return {
       personaId: previewId.value,
       mode: previewMode.value,
       actions: Object.fromEntries(actionCategories.map((category) =>
         [category, actionSelects[category].value])),
+      collaboration: collaborationEnabled.checked ? {
+        enabled: true,
+        default_access: collaborationAccess.value,
+        capabilities: lines(collaborationCapabilities.value),
+        accepts: lines(collaborationAccepts.value),
+        emits: lines(collaborationEmits.value),
+      } : { enabled: false },
     };
   }
 
   function setPreviewSetupState() {
     const choices = previewChoices();
     previewGenerate.disabled = previewBusy || !choices.personaId || !choices.mode ||
-      Object.values(choices.actions).some((value) => !value);
+      Object.values(choices.actions).some((value) => !value) ||
+      (choices.collaboration.enabled && (!choices.collaboration.default_access ||
+        !choices.collaboration.capabilities.length || !choices.collaboration.accepts.length ||
+        !choices.collaboration.emits.length));
   }
 
   function showPreviewSetup() {
@@ -458,6 +487,13 @@
         ? existing.blueprint.action_posture.actions[category]
         : '';
     }
+    const collaboration = existing && existing.collaboration;
+    collaborationEnabled.checked = Boolean(collaboration);
+    collaborationEditor.hidden = !collaboration;
+    collaborationAccess.value = collaboration ? collaboration.default_access : '';
+    collaborationCapabilities.value = collaboration ? collaboration.capabilities.join('\n') : '';
+    collaborationAccepts.value = collaboration ? collaboration.accepts.join('\n') : '';
+    collaborationEmits.value = collaboration ? collaboration.emits.join('\n') : '';
     setPreviewSetupState();
   }
 
@@ -484,12 +520,24 @@
     previewReview.hidden = false;
     previewRegenerateAll.textContent = 'REGENERATE ALL';
     blueprintPreview.textContent = JSON.stringify(previewBundle.blueprint, null, 2);
+    collaborationPreviewWrap.hidden = !previewBundle.collaboration;
+    collaborationPreview.textContent = previewBundle.collaboration
+      ? JSON.stringify(previewBundle.collaboration, null, 2)
+      : '';
     canonicalPreview.value = previewBundle.canonical;
     canonicalDirty = false;
     previewState.textContent = message.stale
       ? 'Interview answers changed after this preview. Regenerate all to bring them in.'
       : 'Blueprint and canonical are generated from the saved interview.';
     previewState.dataset.tone = message.stale ? 'warning' : 'good';
+    if (previewBundle.collaboration && previewBundle.collaboration.default_access === 'read-only') {
+      const routineWrites = ['edit_files', 'send_external', 'change_system', 'delete_data']
+        .filter((category) => previewBundle.blueprint.action_posture.actions[category] === 'allowed');
+      if (routineWrites.length) {
+        previewState.textContent += ' Warning: read-only collaboration conflicts with allowed write actions: ' + routineWrites.join(', ') + '.';
+        previewState.dataset.tone = 'warning';
+      }
+    }
     previewEditState.textContent = previewBundle.canonicalDrift
       ? 'Manual canonical edits differ from the generated blueprint hash. They will never be overwritten silently.'
       : 'Canonical matches the generated blueprint hash.';
@@ -608,6 +656,14 @@
   previewMode.addEventListener('change', setPreviewSetupState);
   for (const select of Object.values(actionSelects))
     select.addEventListener('change', setPreviewSetupState);
+  collaborationEnabled.addEventListener('change', () => {
+    collaborationEditor.hidden = !collaborationEnabled.checked;
+    setPreviewSetupState();
+  });
+  collaborationAccess.addEventListener('change', setPreviewSetupState);
+  collaborationCapabilities.addEventListener('input', setPreviewSetupState);
+  collaborationAccepts.addEventListener('input', setPreviewSetupState);
+  collaborationEmits.addEventListener('input', setPreviewSetupState);
   previewSetupBack.addEventListener('click', () =>
     renderDraftStatus({ draft: currentDraft, cards: interviewCards, suggestedPersonaId }));
   previewGenerate.addEventListener('click', () => {

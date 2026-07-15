@@ -2,6 +2,7 @@
 'use strict';
 
 const {
+  ACCESS_MODES,
   ACTION_CATEGORIES,
   ACTION_DECISIONS,
   ACTION_POSTURES,
@@ -51,7 +52,22 @@ function validatePreviewChoices(draft, choices) {
     if (!draft.answers[key] || !draft.answers[key].trim())
       throw new Error('Complete the interview card: ' + SECTION_HEADINGS[key] + '.');
   }
-  return { personaId, mode, actions: normalizedActions };
+  let collaboration = null;
+  if (choices && choices.collaboration && choices.collaboration.enabled) {
+    const input = choices.collaboration;
+    if (!ACCESS_MODES.has(input.default_access))
+      throw new Error('Collaboration access must be read-only or read-write.');
+    collaboration = { schema_version: 1, default_access: input.default_access };
+    for (const field of ['capabilities', 'accepts', 'emits']) {
+      if (!Array.isArray(input[field]) || !input[field].length ||
+          input[field].some((item) => typeof item !== 'string' || !item.trim()))
+        throw new Error('Collaboration ' + field + ' must contain at least one item.');
+      if (input[field].length > 100 || input[field].some((item) => item.trim().length > 240))
+        throw new Error('Collaboration ' + field + ' is limited to 100 items of 240 characters.');
+      collaboration[field] = [...new Set(input[field].map((item) => item.trim()))];
+    }
+  }
+  return { personaId, mode, actions: normalizedActions, collaboration };
 }
 
 function sectionBlock(key, answer) {
@@ -72,7 +88,7 @@ function draftSourceHash(draft) {
   }));
 }
 
-function renderCanonical(draft, personaId) {
+function renderCanonical(draft, personaId, modules = []) {
   if (!isSafePersonaId(personaId)) throw new Error('Persona ID is invalid.');
   const lines = [
     '---',
@@ -81,14 +97,20 @@ function renderCanonical(draft, personaId) {
     'display_name: ' + JSON.stringify(draft.name),
     'description: ' + JSON.stringify(draft.useCase),
     'aliases: []',
-    'modules: []',
+  ];
+  if (modules.length) {
+    lines.push('modules:', ...modules.map((moduleName) => '  - ' + moduleName));
+  } else {
+    lines.push('modules: []');
+  }
+  lines.push(
     '---',
     '',
     '# ' + draft.name,
     '',
     draft.useCase,
     '',
-  ];
+  );
   for (const key of KEYS) {
     lines.push(sectionBlock(key, draft.answers[key]), '');
   }
@@ -97,7 +119,8 @@ function renderCanonical(draft, personaId) {
 
 function renderBundle(draft, choices) {
   const selected = validatePreviewChoices(draft, choices);
-  const canonical = renderCanonical(draft, selected.personaId);
+  const canonical = renderCanonical(draft, selected.personaId,
+    selected.collaboration ? ['collaboration'] : []);
   const generatedCanonicalHash = hashCanonical(canonical);
   const blueprint = {
     schema_version: 1,
@@ -120,6 +143,7 @@ function renderBundle(draft, choices) {
     personaId: selected.personaId,
     canonical,
     blueprint,
+    collaboration: selected.collaboration,
     generatedCanonicalHash,
     sourceHash: draftSourceHash(draft),
     canonicalDrift: false,

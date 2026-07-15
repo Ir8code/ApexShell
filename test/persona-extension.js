@@ -50,6 +50,16 @@ function previewChoices(personaId = 'rowan') {
   };
 }
 
+function collaborationChoices(access = 'read-only') {
+  return {
+    enabled: true,
+    default_access: access,
+    capabilities: ['review code', 'run checks'],
+    accepts: ['review packet'],
+    emits: ['findings report'],
+  };
+}
+
 (async () => {
   try {
     await gate('state directory stays one level under its root', () => {
@@ -551,6 +561,98 @@ function previewChoices(personaId = 'rowan') {
       assert.equal(bus.posts[1].payload.bundle.canonicalDrift, false);
     });
 
+    await gate('enabled collaboration renders a contract-valid optional module', () => {
+      const workspace = path.join(scratch, 'collaboration-package-workspace');
+      const draft = { name: 'Rowan', useCase: 'Review.', answers: completeAnswers() };
+      const choices = { ...previewChoices(), collaboration: collaborationChoices() };
+      const bundle = previewRenderer.renderBundle(draft, choices);
+      assert.deepEqual(personaContract.parseFrontmatter(bundle.canonical).attributes.modules,
+        ['collaboration']);
+      assert.equal(bundle.collaboration.default_access, 'read-only');
+
+      const paths = personaContract.packagePaths(workspace, 'rowan');
+      fs.mkdirSync(path.dirname(paths.memoryIndex), { recursive: true });
+      fs.writeFileSync(paths.canonical, bundle.canonical);
+      fs.writeFileSync(paths.blueprint, JSON.stringify(bundle.blueprint));
+      fs.writeFileSync(paths.collaboration, JSON.stringify(bundle.collaboration));
+      fs.writeFileSync(paths.memoryIndex, '# Memory\n');
+      fs.writeFileSync(paths.scratchpad, '# Scratchpad\n');
+      const report = personaContract.validatePersonaPackage(workspace, 'rowan');
+      assert.equal(report.valid, true, JSON.stringify(report.errors));
+      assert.equal(report.warnings.length, 0, JSON.stringify(report.warnings));
+    });
+
+    await gate('collaboration choices require complete fields and deduplicate lines', () => {
+      const draft = { name: 'Rowan', useCase: 'Review.', answers: completeAnswers() };
+      const incomplete = { ...previewChoices(), collaboration: collaborationChoices() };
+      incomplete.collaboration.accepts = [];
+      assert.throws(() => previewRenderer.renderBundle(draft, incomplete), /accepts/);
+      const oversized = { ...previewChoices(), collaboration: collaborationChoices() };
+      oversized.collaboration.emits = ['x'.repeat(241)];
+      assert.throws(() => previewRenderer.renderBundle(draft, oversized), /limited to 100 items/);
+      const duplicate = { ...previewChoices(), collaboration: collaborationChoices('read-write') };
+      duplicate.collaboration.capabilities = ['review code', 'review code', ' run checks '];
+      const bundle = previewRenderer.renderBundle(draft, duplicate);
+      assert.deepEqual(bundle.collaboration.capabilities, ['review code', 'run checks']);
+      assert.equal(bundle.collaboration.default_access, 'read-write');
+    });
+
+    await gate('read-only collaboration conflict is visible to Contract v1', () => {
+      const workspace = path.join(scratch, 'collaboration-conflict-workspace');
+      const draft = { name: 'Rowan', useCase: 'Review.', answers: completeAnswers() };
+      const choices = { ...previewChoices(), collaboration: collaborationChoices() };
+      choices.actions.edit_files = 'allowed';
+      const bundle = previewRenderer.renderBundle(draft, choices);
+      const paths = personaContract.packagePaths(workspace, 'rowan');
+      fs.mkdirSync(path.dirname(paths.memoryIndex), { recursive: true });
+      fs.writeFileSync(paths.canonical, bundle.canonical);
+      fs.writeFileSync(paths.blueprint, JSON.stringify(bundle.blueprint));
+      fs.writeFileSync(paths.collaboration, JSON.stringify(bundle.collaboration));
+      fs.writeFileSync(paths.memoryIndex, '# Memory\n');
+      fs.writeFileSync(paths.scratchpad, '# Scratchpad\n');
+      const report = personaContract.validatePersonaPackage(workspace, 'rowan');
+      assert.equal(report.valid, true);
+      assert.equal(report.warnings.some((finding) => finding.code === 'access-conflict'), true);
+      assert.throws(
+        () => draftStore.validatePreview({ ...bundle, collaboration: null }),
+        /does not match canonical modules/
+      );
+      const scalarModules = previewRenderer.withCanonicalEdit(
+        previewRenderer.renderBundle(draft, previewChoices()),
+        previewRenderer.renderBundle(draft, previewChoices()).canonical
+          .replace('modules: []', 'modules: collaboration')
+      );
+      assert.throws(
+        () => draftStore.validatePreview(scalarModules),
+        /canonical modules must be a list/
+      );
+    });
+
+    await gate('oversized collaboration preview cannot create an unreadable draft', () => {
+      const stateDir = path.join(scratch, 'collaboration-size-state');
+      const workspace = path.join(scratch, 'collaboration-size-workspace');
+      fs.mkdirSync(stateDir);
+      fs.mkdirSync(workspace);
+      let draft = draftStore.createDraft(stateDir, workspace, { name: 'Rowan', useCase: 'Review.' });
+      const largeAnswers = Object.fromEntries(KEYS.map((key) => [key, key + ':' + 'a'.repeat(11900)]));
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, { answers: largeAnswers });
+      const collaboration = collaborationChoices();
+      const largeItems = Array.from({ length: 100 }, (_, i) => String(i).padStart(3, '0') + 'x'.repeat(237));
+      collaboration.capabilities = largeItems;
+      collaboration.accepts = largeItems.map((item) => 'a' + item.slice(1));
+      collaboration.emits = largeItems.map((item) => 'e' + item.slice(1));
+      const bundle = previewRenderer.renderBundle(draft, {
+        ...previewChoices(), collaboration,
+      });
+      assert.throws(
+        () => draftStore.updateDraft(stateDir, draft.id, draft.revision, { preview: bundle }),
+        /Draft exceeds the 256 KB limit/
+      );
+      const unchanged = draftStore.readDraft(stateDir, draft.id);
+      assert.equal(unchanged.revision, draft.revision);
+      assert.equal(unchanged.preview, null);
+    });
+
     await gate('renderer registers dock and drives workspace messages', () => {
       function makeNode() {
         return {
@@ -559,6 +661,7 @@ function previewChoices(personaId = 'rowan') {
           value: '',
           hidden: false,
           disabled: false,
+          checked: false,
           children: [],
           listeners: {},
           addEventListener(type, fn) { this.listeners[type] = fn; },
@@ -723,16 +826,31 @@ function previewChoices(personaId = 'rowan') {
           select.value = 'ask';
           select.listeners.change();
         }
+        nodes.get('.personaCollaborationEnabled').checked = true;
+        nodes.get('.personaCollaborationEnabled').listeners.change();
+        nodes.get('.personaCollaborationAccess').value = 'read-only';
+        nodes.get('.personaCollaborationAccess').listeners.change();
+        nodes.get('.personaCapabilities').value = 'review code\nrun checks';
+        nodes.get('.personaCapabilities').listeners.input();
+        nodes.get('.personaAccepts').value = 'review packet';
+        nodes.get('.personaAccepts').listeners.input();
+        nodes.get('.personaEmits').value = 'findings report';
+        nodes.get('.personaEmits').listeners.input();
         assert.equal(nodes.get('.personaPreviewGenerate').disabled, false);
         nodes.get('.personaPreviewGenerate').listeners.click();
         assert.equal(posts.at(-1).type, 'personaPreviewGenerate');
         assert.equal(posts.at(-1).payload.actions.delete_data, 'ask');
+        assert.equal(posts.at(-1).payload.collaboration.default_access, 'read-only');
 
-        const uiBundle = previewRenderer.renderBundle(savedUiDraft, previewChoices());
+        const uiBundle = previewRenderer.renderBundle(savedUiDraft, {
+          ...previewChoices(), collaboration: collaborationChoices(),
+        });
         const previewUiDraft = { ...savedUiDraft, revision: 7, preview: uiBundle };
         handlers.get('personaPreviewStatus')({ draft: previewUiDraft, bundle: uiBundle, stale: false });
         assert.equal(nodes.get('.personaPreviewReview').hidden, false);
         assert.match(nodes.get('.personaBlueprintPreview').textContent, /"canonical_hash"/);
+        assert.equal(nodes.get('.personaCollaborationPreviewWrap').hidden, false);
+        assert.match(nodes.get('.personaCollaborationPreview').textContent, /"read-only"/);
         assert.match(nodes.get('.personaCanonicalPreview').value, /# Rowan/);
         nodes.get('.personaCanonicalPreview').value = uiBundle.canonical.replace('# Rowan', '# Rowan edited');
         nodes.get('.personaCanonicalPreview').listeners.input();
@@ -774,7 +892,7 @@ function previewChoices(personaId = 'rowan') {
       }
     });
 
-    console.log(`PERSONA EXTENSION: ${passed}/31 passed`);
+    console.log(`PERSONA EXTENSION: ${passed}/35 passed`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

@@ -274,6 +274,7 @@ function register(ctx) {
         personaId: message && message.personaId,
         mode: message && message.mode,
         actions: message && message.actions,
+        collaboration: message && message.collaboration,
       });
       const draft = drafts.updateDraft(ctx.stateDir, current.id,
         message && message.expectedRevision, { preview: bundle });
