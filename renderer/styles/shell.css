@@ -132,7 +132,6 @@
 .dockTab:hover { color: var(--text); border-color: var(--accent); }
 .dockPane.open .dockTab { color: var(--accent); }
 
-/* pipeline-tab styles moved to extensions/apex-pipeline/style.css (R32) */
 .paneTitle { font-size: 12px; letter-spacing: .4em; text-indent: .4em;
              color: var(--dim); font-weight: 600; margin-bottom: 6px; }
 .paneNote { font-size: 11.5px; color: var(--faint); max-width: 480px; line-height: 1.6; }

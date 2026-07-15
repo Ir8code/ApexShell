@@ -256,8 +256,8 @@
   }
   document.querySelectorAll('.dockPane').forEach((el) =>
     registerDockPane(el, { order: parseFloat(el.dataset.order) || undefined }));
-  // modules may open a dock tab on explicit user intent (viewer path-clicks);
-  // extensions register their own panes (apex-pipeline is the worked example)
+  // Modules may open a dock tab on explicit user intent (viewer path-clicks),
+  // and extensions can register their own panes.
   window.ApexShell = {
     openDock: (id, s) => { if (dockEls[id]) setDockTab(id, s || 'quarter', false); },
     registerDockPane,
