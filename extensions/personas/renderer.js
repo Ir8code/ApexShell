@@ -127,6 +127,7 @@
         '<div class="personaPreviewError personaPreviewReviewError"></div>' +
         '<div class="personaValidationBlock"><button class="personaValidatePreview" type="button">VALIDATE PREVIEW</button><button class="personaAcceptCanonical" type="button" hidden>ACCEPT MANUAL CANONICAL HASH</button><div class="personaValidationSummary"></div><div class="personaValidationFindings"></div></div>' +
         '<div class="personaTestBlock"><div class="personaInterviewSubhead">DISPOSABLE BEHAVIOR TEST</div><p class="personaTestExplain">Checks current Claude usage, then runs persona-derived prompts in a hidden tool-disabled session that is not saved or registered.</p><button class="personaTestPrepare" type="button">CHECK USAGE &amp; PREPARE</button><button class="personaTestStart" type="button" hidden>START DISPOSABLE TEST</button><button class="personaTestStop" type="button" hidden>STOP TEST</button><div class="personaTestSummary"></div><div class="personaTestResults"></div></div>' +
+        '<div class="personaCreateBlock"><div class="personaInterviewSubhead">PERMANENT CREATION</div><p class="personaCreateExplain">Available after this exact draft completes its disposable test. Creation writes a new portable package atomically and adds its permanent seat preset. Existing persona folders are never overwritten.</p><button class="personaCreatePermanent" type="button" disabled>CREATE PERSONA</button><div class="personaCreateSummary"></div></div>' +
         '<div class="personaInterviewActions"><button class="personaPreviewDrafts" type="button">DRAFTS</button><button class="personaPreviewBack" type="button">BACK TO INTERVIEW</button><button class="personaPreviewRegenerateAll" type="button">REGENERATE ALL</button></div>' +
       '</section>' +
       '<p class="personaBuilderFoot">This setting stays on this Apex installation. Model, provider, credentials, and runtime permissions stay outside the personas you build.</p>' +
@@ -203,6 +204,8 @@
   const testStop = pane.querySelector('.personaTestStop');
   const testSummary = pane.querySelector('.personaTestSummary');
   const testResults = pane.querySelector('.personaTestResults');
+  const createPermanent = pane.querySelector('.personaCreatePermanent');
+  const createSummary = pane.querySelector('.personaCreateSummary');
   const actionCategories = ['read_files', 'edit_files', 'run_commands', 'search_web',
     'use_connectors', 'send_external', 'change_system', 'delete_data'];
   const actionSelects = Object.fromEntries(actionCategories.map((category) =>
@@ -239,6 +242,8 @@
   let preparedTest = null;
   let testRows = new Map();
   let testRunning = false;
+  let createArmed = false;
+  let testCompletedForPreview = false;
 
   function setChoosing(value) {
     choosing = value;
@@ -590,6 +595,12 @@
     testPrepare.disabled = false;
     testStart.hidden = true;
     testStop.hidden = true;
+    createArmed = false;
+    testCompletedForPreview = false;
+    createPermanent.textContent = 'CREATE PERSONA';
+    createPermanent.disabled = true;
+    createSummary.textContent = 'Complete the disposable behavior test before permanent creation.';
+    createSummary.dataset.tone = 'quiet';
     sectionSelect.replaceChildren();
     for (const card of interviewCards) {
       const option = document.createElement('option');
@@ -755,10 +766,12 @@
       testPrepare.disabled = false;
       testStart.hidden = true;
       testStop.hidden = true;
+      createPermanent.disabled = true;
       return;
     }
     if (message.phase === 'starting') {
       testRunning = true;
+      testCompletedForPreview = false;
       testSummary.textContent = `Disposable seat starting · ${message.total} cases queued.`;
       testPrepare.disabled = true;
       testStart.hidden = true;
@@ -770,17 +783,25 @@
       testStop.hidden = false;
     } else if (message.phase === 'complete') {
       testRunning = false;
+      testCompletedForPreview = true;
       testSummary.textContent = `TEST COMPLETE · ${message.total} observed responses. Mark each result, then revise the interview or canonical where needed.`;
       testSummary.dataset.tone = 'good';
       testPrepare.disabled = false;
       testStart.hidden = true;
       testStop.hidden = true;
+      createArmed = false;
+      createPermanent.textContent = 'CREATE PERSONA';
+      createPermanent.disabled = false;
+      createSummary.textContent = 'Test complete. Review every observed response and mark any needed revisions before creating.';
+      createSummary.dataset.tone = 'warning';
     } else if (message.phase === 'stopped') {
       testRunning = false;
+      testCompletedForPreview = false;
       testSummary.textContent = 'Disposable test stopped. No session was saved.';
       testPrepare.disabled = false;
       testStart.hidden = true;
       testStop.hidden = true;
+      createPermanent.disabled = true;
     }
   }
 
@@ -789,6 +810,24 @@
     if (!target) return;
     target.observed.textContent = 'OBSERVED · ' + message.response;
     target.row.dataset.complete = 'true';
+  }
+
+  function renderCreateResult(message) {
+    if (message.ok) {
+      createArmed = false;
+      createPermanent.textContent = 'PERSONA CREATED';
+      createPermanent.disabled = true;
+      createSummary.textContent = message.presetRegistered === false
+        ? `PACKAGE CREATED · Seat preset was not registered: ${message.registrationError}`
+        : `CREATED · ${message.displayName} · ${message.personaDir}`;
+      createSummary.dataset.tone = message.presetRegistered === false ? 'warning' : 'good';
+      return;
+    }
+    createArmed = false;
+    createPermanent.textContent = 'CREATE PERSONA';
+    createPermanent.disabled = false;
+    createSummary.textContent = 'NOT CREATED · ' + message.error;
+    createSummary.dataset.tone = 'warning';
   }
 
   ApexBus.on('personaWorkspaceStatus', renderWorkspace);
@@ -805,6 +844,7 @@
   ApexBus.on('personaTestPrepared', renderTestPrepared);
   ApexBus.on('personaTestStatus', renderTestStatus);
   ApexBus.on('personaTestCaseResult', renderTestCaseResult);
+  ApexBus.on('personaCreateResult', renderCreateResult);
   choose.addEventListener('click', () => {
     if (choosing) return;
     setChoosing(true);
@@ -919,6 +959,7 @@
         ? 'Manual canonical edits differ from the generated blueprint hash.'
         : 'Canonical matches the generated blueprint hash.');
     previewEditState.dataset.tone = canonicalDirty || previewBundle.canonicalDrift ? 'warning' : 'good';
+    createPermanent.disabled = canonicalDirty || !testCompletedForPreview;
   });
   canonicalSave.addEventListener('click', () => {
     if (!canonicalDirty || canonicalSave.disabled) return;
@@ -938,6 +979,7 @@
       : 'Canonical matches the generated blueprint hash.';
     previewEditState.dataset.tone = previewBundle.canonicalDrift ? 'warning' : 'good';
     previewReviewError.textContent = '';
+    createPermanent.disabled = !testCompletedForPreview;
   });
   sectionRegenerate.addEventListener('click', () => {
     if (canonicalDirty) {
@@ -1006,6 +1048,26 @@
     });
   });
   testStop.addEventListener('click', () => ApexBus.post('personaTestStop', {}));
+  createPermanent.addEventListener('click', () => {
+    if (createPermanent.disabled) return;
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or restore the canonical edit before permanent creation.';
+      return;
+    }
+    if (!createArmed) {
+      createArmed = true;
+      createPermanent.textContent = 'CONFIRM PERMANENT CREATION';
+      createSummary.textContent = 'This creates a new portable package and permanent seat preset. Click again to confirm.';
+      createSummary.dataset.tone = 'warning';
+      return;
+    }
+    createPermanent.disabled = true;
+    ApexBus.post('personaCreatePermanent', {
+      id: currentDraft.id,
+      expectedRevision: currentDraft.revision,
+      confirmed: true,
+    });
+  });
 
   ApexShell.registerDockPane(pane, { order: 20 });
   ApexBus.post('personaWorkspaceGet', {});

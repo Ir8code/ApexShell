@@ -231,6 +231,16 @@
 .personaTestResults [data-role="observed"] { color: var(--text); }
 .personaTestResults select { width: 100%; margin-top: 9px; padding: 7px 9px;
   border: 1px solid var(--edge); border-radius: 7px; background: var(--bg); color: var(--text); }
+.personaCreateBlock { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--edge); }
+.personaCreateExplain { color: var(--faint); font-size: 10.5px; line-height: 1.5; margin: 8px 0 12px; }
+.personaCreatePermanent { padding: 10px 14px; border: 1px solid var(--good);
+  border-radius: 8px; background: color-mix(in srgb, var(--good) 14%, transparent);
+  color: var(--text); font-size: 9.5px; font-weight: 700; letter-spacing: .1em; cursor: pointer; }
+.personaCreatePermanent:disabled { opacity: .4; cursor: default; }
+.personaCreateSummary { color: var(--faint); font-size: 10.5px; line-height: 1.5; margin-top: 10px;
+  overflow-wrap: anywhere; user-select: text; }
+.personaCreateSummary[data-tone="good"] { color: var(--good); }
+.personaCreateSummary[data-tone="warning"] { color: var(--warning); }
 @media (max-width: 720px) {
   .personaActionGrid { grid-template-columns: 1fr; }
 }

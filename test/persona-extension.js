@@ -15,6 +15,8 @@ const personaContract = require('../extensions/personas/lib/contract');
 const previewValidator = require('../extensions/personas/lib/validator');
 const importer = require('../extensions/personas/lib/importer');
 const tester = require('../extensions/personas/lib/tester');
+const creator = require('../extensions/personas/lib/creator');
+const seatRuntime = require('../main/seats');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-persona-extension-'));
 let passed = 0;
@@ -61,6 +63,24 @@ function collaborationChoices(access = 'read-only') {
     accepts: ['review packet'],
     emits: ['findings report'],
   };
+}
+
+function completeDisposableTest(bus, draft, disposableSeat) {
+  bus.posts.length = 0;
+  bus.handlers.get('personaTestPrepare')({ id: draft.id });
+  const cases = bus.posts[0].payload.cases;
+  bus.posts.length = 0;
+  bus.handlers.get('personaTestStart')({
+    id: draft.id, expectedRevision: draft.revision, approved: true,
+  });
+  const disposable = disposableSeat();
+  disposable.onEvent({ type: 'init', tools: [] });
+  disposable.onEvent({ type: 'text', text: 'TEST-SEAT-READY' });
+  disposable.onEvent({ type: 'result', ok: true });
+  for (let index = 0; index < cases.length; index++) {
+    disposable.onEvent({ type: 'text', text: 'Observed permanent response ' + index });
+    disposable.onEvent({ type: 'result', ok: true });
+  }
 }
 
 (async () => {
@@ -1070,6 +1090,235 @@ function collaborationChoices(access = 'read-only') {
       }
     });
 
+    await gate('permanent package creation is atomic, complete, and preset-ready', () => {
+      const workspace = path.join(scratch, 'creator-workspace');
+      fs.mkdirSync(workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      const draft = {
+        name: 'Rowan',
+        useCase: 'Review releases independently.',
+        answers: completeAnswers('Permanent persona evidence '.repeat(12)),
+      };
+      draft.preview = previewRenderer.renderBundle(draft, {
+        ...previewChoices(), collaboration: collaborationChoices(),
+      });
+      const created = creator.createPackage(workspace, draft);
+      assert.equal(created.personaId, 'rowan');
+      assert.equal(created.report.valid, true);
+      assert.equal(personaContract.validatePersonaPackage(workspace, 'rowan').valid, true);
+      assert.deepEqual(fs.readdirSync(created.paths.personaDir).sort(),
+        ['blueprint.json', 'collaboration.json', 'memory', 'rowan.md', 'scratchpad.md']);
+      assert.match(fs.readFileSync(created.paths.memoryIndex, 'utf8'), /No durable memories/);
+      assert.match(fs.readFileSync(created.paths.scratchpad, 'utf8'), /Rowan Scratchpad/);
+      assert.equal(fs.readdirSync(path.join(workspace, 'personas'))
+        .some((name) => name.includes('.creating-')), false);
+      const presets = creator.listPresets(workspace);
+      assert.equal(presets.length, 1);
+      assert.equal(presets[0].name, 'Rowan');
+      assert.equal(presets[0].cwd, workspace);
+      assert.match(presets[0].kickoff, /foundation\.md/);
+      assert.match(presets[0].kickoff, /personas\/rowan\/rowan\.md/);
+      assert.match(presets[0].kickoff, /runtime settings, not the persona package/);
+    });
+
+    await gate('permanent creation never overwrites and rolls back invalid output', () => {
+      const workspace = path.join(scratch, 'creator-safety-workspace');
+      fs.mkdirSync(workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      const personasDir = path.join(workspace, 'personas');
+      const existingDir = path.join(personasDir, 'rowan');
+      fs.mkdirSync(existingDir);
+      fs.writeFileSync(path.join(existingDir, 'sentinel.txt'), 'keep');
+      const existingDraft = {
+        name: 'Rowan', useCase: 'Review.',
+        answers: completeAnswers('Existing package evidence '.repeat(12)),
+      };
+      existingDraft.preview = previewRenderer.renderBundle(existingDraft, previewChoices());
+      assert.throws(() => creator.createPackage(workspace, existingDraft), /already exists/);
+      assert.equal(fs.readFileSync(path.join(existingDir, 'sentinel.txt'), 'utf8'), 'keep');
+      fs.mkdirSync(path.join(personasDir, '.abandoned-stage'));
+      assert.deepEqual(creator.listPresets(workspace), []);
+
+      const reservedDraft = {
+        name: 'Seat', useCase: 'Collide with the built-in seat.',
+        answers: completeAnswers('Reserved name evidence '.repeat(12)),
+      };
+      reservedDraft.preview = previewRenderer.renderBundle(reservedDraft, previewChoices('reserved-seat'));
+      assert.throws(() => creator.createPackage(workspace, reservedDraft), /reserved by Apex/);
+      assert.equal(fs.existsSync(path.join(personasDir, 'reserved-seat')), false);
+
+      const renamedCanonicalDraft = {
+        name: 'Mirror', useCase: 'Test canonical identity invariants.',
+        answers: completeAnswers('Canonical name evidence '.repeat(12)),
+      };
+      renamedCanonicalDraft.preview = previewRenderer.renderBundle(
+        renamedCanonicalDraft, previewChoices('mirror'));
+      renamedCanonicalDraft.preview.canonical = renamedCanonicalDraft.preview.canonical
+        .replace('display_name: "Mirror"', 'display_name: "External Reviewer"');
+      renamedCanonicalDraft.preview.generatedCanonicalHash = personaContract.hashCanonical(
+        renamedCanonicalDraft.preview.canonical);
+      renamedCanonicalDraft.preview.blueprint.canonical_hash =
+        renamedCanonicalDraft.preview.generatedCanonicalHash;
+      assert.throws(() => creator.createPackage(workspace, renamedCanonicalDraft),
+        /display_name must exactly match/);
+      assert.equal(fs.existsSync(path.join(personasDir, 'mirror')), false);
+
+      const invalidDraft = {
+        name: 'Ember', useCase: 'Audit.',
+        answers: completeAnswers('Rollback evidence '.repeat(12)),
+      };
+      invalidDraft.preview = previewRenderer.renderBundle(invalidDraft, {
+        ...previewChoices('ember'), collaboration: collaborationChoices(),
+      });
+      invalidDraft.preview.collaboration.default_access = 'invalid';
+      const foreignLock = path.join(personasDir, '.ember.create.lock');
+      fs.writeFileSync(foreignLock, 'other creator');
+      assert.throws(() => creator.createPackage(workspace, invalidDraft), /already in progress/);
+      assert.equal(fs.readFileSync(foreignLock, 'utf8'), 'other creator');
+      fs.unlinkSync(foreignLock);
+      assert.throws(() => creator.createPackage(workspace, invalidDraft), /failed validation/);
+      assert.equal(fs.existsSync(path.join(personasDir, 'ember')), false);
+      assert.equal(fs.readdirSync(personasDir).some((name) => name.includes('.creating-')), false);
+    });
+
+    await gate('seat preset groups keep valid personas when one name conflicts', () => {
+      const seats = seatRuntime.extensionApi;
+      seats.registerPreset({ name: 'External Reviewer', kickoff: 'foreign' });
+      assert.deepEqual(seats.checkPresetNames('persona-builder', ['Seat', 'External Reviewer']), [
+        { name: 'Seat', reason: 'reserved by Apex' },
+        { name: 'External Reviewer', reason: 'owned by another extension' },
+      ]);
+      const report = seats.replacePresetGroup('persona-builder', [
+        { name: 'Rowan', kickoff: 'rowan' },
+        { name: 'External Reviewer', kickoff: 'collision' },
+        { name: 'Ember', kickoff: 'ember' },
+      ]);
+      assert.deepEqual(report.registered, ['Rowan', 'Ember']);
+      assert.deepEqual(report.skipped, [
+        { name: 'External Reviewer', reason: 'owned by another extension' },
+      ]);
+      assert.deepEqual(seats.checkPresetNames('another-extension', ['Rowan', 'Ember']), [
+        { name: 'Rowan', reason: 'owned by another extension' },
+        { name: 'Ember', reason: 'owned by another extension' },
+      ]);
+      seats.replacePresetGroup('persona-builder', []);
+    });
+
+    await gate('permanent creation requires the exact tested draft and refreshes presets', () => {
+      const stateDir = path.join(scratch, 'permanent-bus-state');
+      const workspace = path.join(scratch, 'permanent-bus-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      let draft = draftStore.createDraft(stateDir, workspace, {
+        name: 'Rowan', useCase: 'Review releases independently.',
+      });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, {
+        answers: completeAnswers('Permanent bus evidence '.repeat(12)),
+      });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, {
+        preview: previewRenderer.renderBundle(draft, previewChoices()),
+      });
+      const bus = fakeBus();
+      let disposable;
+      const controller = { sent: [], send(text) { this.sent.push(text); }, close() {} };
+      const presetGroups = [];
+      persona.register({
+        bus, stateDir, async pickDirectory() { return null; },
+        usage: { claudeSnapshot() { return { stale: false, asOf: Date.now() }; } },
+        seats: {
+          startDisposable(options) { disposable = options; return controller; },
+          checkPresetNames() { return []; },
+          replacePresetGroup(owner, presets) {
+            presetGroups.push({ owner, presets });
+            return { registered: presets.map((preset) => preset.name), skipped: [] };
+          },
+        },
+      });
+      bus.posts.length = 0;
+      bus.handlers.get('personaCreatePermanent')({
+        id: draft.id, expectedRevision: draft.revision, confirmed: true,
+      });
+      assert.equal(bus.posts[0].payload.ok, false);
+      assert.match(bus.posts[0].payload.error, /Complete the disposable test/);
+
+      completeDisposableTest(bus, draft, () => disposable);
+      bus.posts.length = 0;
+      bus.handlers.get('personaCreatePermanent')({
+        id: draft.id, expectedRevision: draft.revision, confirmed: true,
+      });
+      assert.equal(bus.posts[0].type, 'personaCreateResult');
+      assert.equal(bus.posts[0].payload.ok, true);
+      assert.equal(bus.posts[0].payload.personaId, 'rowan');
+      assert.equal(personaContract.validatePersonaPackage(workspace, 'rowan').valid, true);
+      assert.equal(presetGroups.at(-1).owner, 'persona-builder');
+      assert.deepEqual(presetGroups.at(-1).presets.map((preset) => preset.name), ['Rowan']);
+    });
+
+    await gate('permanent creation preflights foreign names and reports a registration race', () => {
+      const stateDir = path.join(scratch, 'permanent-collision-state');
+      const workspace = path.join(scratch, 'permanent-collision-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      let draft = draftStore.createDraft(stateDir, workspace, {
+        name: 'Harbor', useCase: 'Audit releases independently.',
+      });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, {
+        answers: completeAnswers('Collision handling evidence '.repeat(12)),
+      });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, {
+        preview: previewRenderer.renderBundle(draft, previewChoices('harbor')),
+      });
+      const bus = fakeBus();
+      let disposable;
+      let preflightConflict = true;
+      const controller = { send() {}, close() {} };
+      persona.register({
+        bus, stateDir, async pickDirectory() { return null; },
+        usage: { claudeSnapshot() { return { stale: false, asOf: Date.now() }; } },
+        seats: {
+          startDisposable(options) { disposable = options; return controller; },
+          checkPresetNames() {
+            return preflightConflict
+              ? [{ name: 'Harbor', reason: 'owned by another extension' }]
+              : [];
+          },
+          replacePresetGroup() {
+            return {
+              registered: [],
+              skipped: [{ name: 'Harbor', reason: 'owned by another extension' }],
+            };
+          },
+        },
+      });
+      completeDisposableTest(bus, draft, () => disposable);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaCreatePermanent')({
+        id: draft.id, expectedRevision: draft.revision, confirmed: true,
+      });
+      assert.equal(bus.posts[0].payload.ok, false);
+      assert.match(bus.posts[0].payload.error, /owned by another extension/);
+      assert.equal(fs.existsSync(path.join(workspace, 'personas', 'harbor')), false);
+
+      preflightConflict = false; // a foreign owner can still win after the read-only preflight
+      bus.posts.length = 0;
+      bus.handlers.get('personaCreatePermanent')({
+        id: draft.id, expectedRevision: draft.revision, confirmed: true,
+      });
+      assert.equal(bus.posts[0].payload.ok, true);
+      assert.equal(bus.posts[0].payload.presetRegistered, false);
+      assert.match(bus.posts[0].payload.registrationError, /owned by another extension/);
+      assert.equal(personaContract.validatePersonaPackage(workspace, 'harbor').valid, true);
+      assert.match(bus.posts[1].payload.text, /was not registered/);
+
+      bus.posts.length = 0;
+      bus.handlers.get('ready')();
+      assert.equal(bus.posts[0].type, 'toast');
+      assert.match(bus.posts[0].payload.text, /were not registered/);
+    });
+
     await gate('renderer registers dock and drives workspace messages', () => {
       function makeNode() {
         return {
@@ -1349,6 +1598,29 @@ function collaborationChoices(access = 'read-only') {
         assert.equal(posts.at(-1).type, 'personaTestStop');
         handlers.get('personaTestStatus')({ phase: 'stopped' });
         assert.match(nodes.get('.personaTestSummary').textContent, /No session was saved/);
+        handlers.get('personaTestStatus')({ phase: 'complete', total: 2 });
+        assert.equal(nodes.get('.personaCreatePermanent').disabled, false);
+        const beforeCreateArm = posts.length;
+        nodes.get('.personaCreatePermanent').listeners.click();
+        assert.equal(posts.length, beforeCreateArm);
+        assert.equal(nodes.get('.personaCreatePermanent').textContent, 'CONFIRM PERMANENT CREATION');
+        nodes.get('.personaCreatePermanent').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaCreatePermanent');
+        assert.equal(posts.at(-1).payload.confirmed, true);
+        handlers.get('personaCreateResult')({
+          ok: true,
+          displayName: 'Rowan',
+          personaDir: path.join(scratch, 'ui-workspace', 'personas', 'rowan'),
+        });
+        assert.match(nodes.get('.personaCreateSummary').textContent, /CREATED/);
+        assert.equal(nodes.get('.personaCreatePermanent').disabled, true);
+        handlers.get('personaCreateResult')({
+          ok: true,
+          presetRegistered: false,
+          registrationError: 'Rowan (owned by another extension)',
+        });
+        assert.match(nodes.get('.personaCreateSummary').textContent, /was not registered/);
+        assert.doesNotMatch(nodes.get('.personaCreateSummary').textContent, /restart/i);
         nodes.get('.personaCanonicalPreview').value = uiBundle.canonical.replace('# Rowan', '# Rowan edited');
         nodes.get('.personaCanonicalPreview').listeners.input();
         assert.equal(nodes.get('.personaCanonicalSave').disabled, false);
@@ -1389,7 +1661,7 @@ function collaborationChoices(access = 'read-only') {
       }
     });
 
-    console.log(`PERSONA EXTENSION: ${passed}/44 passed`);
+    console.log(`PERSONA EXTENSION: ${passed}/49 passed`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

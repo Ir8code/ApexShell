@@ -12,6 +12,7 @@ const previewRenderer = require('./lib/render');
 const previewValidator = require('./lib/validator');
 const importer = require('./lib/importer');
 const tester = require('./lib/tester');
+const creator = require('./lib/creator');
 
 const CONFIG_FILE = 'workspace.json';
 const TEST_PREPARE_TTL_MS = 5 * 60 * 1000;
@@ -126,6 +127,28 @@ function register(ctx) {
   let activeImportAudit = null;
   let preparedTest = null;
   let activeTest = null;
+  let completedTest = null;
+
+  const syncPresets = () => {
+    try {
+      if (!ctx.seats || typeof ctx.seats.replacePresetGroup !== 'function')
+        throw new Error('Permanent seat preset service is unavailable.');
+      const saved = readWorkspaceConfig(ctx.stateDir);
+      const presets = saved.workspace && !saved.error ? creator.listPresets(saved.workspace) : [];
+      const report = ctx.seats.replacePresetGroup('persona-builder', presets) || {};
+      return {
+        error: null,
+        registered: Array.isArray(report.registered) ? report.registered : [],
+        skipped: Array.isArray(report.skipped) ? report.skipped : [],
+      };
+    } catch (err) { return { error: err, registered: [], skipped: [] }; }
+  };
+  const presetSyncIssue = (result) => {
+    if (result.error) return result.error.message;
+    if (!result.skipped.length) return null;
+    return result.skipped.map((item) =>
+      `${item.name || 'Unnamed preset'} (${item.reason || 'could not be registered'})`).join(', ');
+  };
 
   const publishStatus = () => ctx.bus.post('personaWorkspaceStatus', workspaceStatus(ctx.stateDir));
   const publishFoundation = () =>
@@ -182,7 +205,12 @@ function register(ctx) {
         title: 'Choose a Persona Builder workspace',
         defaultPath: current || undefined,
       });
-      if (selected) writeWorkspaceConfig(ctx.stateDir, selected);
+      if (selected) {
+        writeWorkspaceConfig(ctx.stateDir, selected);
+        const presetIssue = presetSyncIssue(syncPresets());
+        if (presetIssue)
+          ctx.bus.post('toast', { text: 'Persona workspace changed, but some presets could not refresh: ' + presetIssue });
+      }
       publishStatus();
     } catch (err) {
       ctx.bus.post('toast', { text: 'Persona workspace was not changed: ' + err.message });
@@ -495,9 +523,15 @@ function register(ctx) {
         deltaText: '',
       };
       startingRun = run;
+      completedTest = null;
       const sendCase = () => {
         run.index++;
         if (run.index >= run.cases.length) {
+          completedTest = {
+            draftId: current.id,
+            revision: current.revision,
+            canonicalHash: current.preview.generatedCanonicalHash,
+          };
           activeTest = null;
           run.controller.close();
           ctx.bus.post('personaTestStatus', { phase: 'complete', total: run.cases.length });
@@ -572,6 +606,64 @@ function register(ctx) {
     activeTest = null;
     run.controller.close();
     ctx.bus.post('personaTestStatus', { phase: 'stopped' });
+  });
+
+  ctx.bus.on('personaCreatePermanent', (message) => {
+    try {
+      if (!message || message.confirmed !== true)
+        throw new Error('Permanent persona creation requires explicit confirmation.');
+      const draft = currentWorkspaceDraft(message.id);
+      if (message.expectedRevision !== draft.revision)
+        throw new Error('The draft changed; reopen it before permanent creation.');
+      if (!completedTest || completedTest.draftId !== draft.id ||
+          completedTest.revision !== draft.revision ||
+          completedTest.canonicalHash !== draft.preview.generatedCanonicalHash)
+        throw new Error('Complete the disposable test for this exact draft before permanent creation.');
+      const workspace = interviewWorkspace(ctx.stateDir);
+      const foundationText = foundation.inspectFoundation(workspace).content;
+      const report = previewValidator.validatePreview(workspace, draft, foundationText);
+      if (!report.valid)
+        throw new Error('Resolve blocking preview validation errors before permanent creation.');
+      if (!ctx.seats || typeof ctx.seats.checkPresetNames !== 'function')
+        throw new Error('Permanent seat preset name checking is unavailable.');
+      const conflicts = ctx.seats.checkPresetNames('persona-builder', [draft.name]);
+      if (conflicts.length) {
+        const conflict = conflicts[0];
+        throw new Error(`Seat preset name cannot be registered: ${conflict.name} (${conflict.reason}).`);
+      }
+      const created = creator.createPackage(workspace, draft);
+      const presetResult = syncPresets();
+      const skippedCreatedPreset = presetResult.skipped.find((item) =>
+        String(item.name || '').toLowerCase() === created.displayName.toLowerCase());
+      const registrationError = presetResult.error
+        ? presetResult.error.message
+        : skippedCreatedPreset
+          ? `${skippedCreatedPreset.name} (${skippedCreatedPreset.reason})`
+          : null;
+      completedTest = null;
+      ctx.bus.post('personaCreateResult', {
+        ok: true,
+        presetRegistered: !registrationError,
+        registrationError,
+        personaId: created.personaId,
+        displayName: created.displayName,
+        personaDir: created.paths.personaDir,
+        warnings: report.warnings,
+        suggestions: report.suggestions,
+      });
+      if (registrationError)
+        ctx.bus.post('toast', { text: 'Persona package was created, but its seat preset was not registered: ' + registrationError });
+      publishStatus();
+    } catch (err) {
+      ctx.bus.post('personaCreateResult', { ok: false, error: err.message });
+      ctx.bus.post('toast', { text: 'Permanent persona was not created: ' + err.message });
+    }
+  });
+
+  ctx.bus.on('ready', () => {
+    const presetIssue = presetSyncIssue(syncPresets());
+    if (presetIssue)
+      ctx.bus.post('toast', { text: 'Some Persona Builder seat presets were not registered: ' + presetIssue });
   });
 }
 
