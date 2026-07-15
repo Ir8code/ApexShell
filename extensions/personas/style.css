@@ -207,6 +207,30 @@
 .personaValidationFindings > div { color: var(--dim); font-size: 10.5px; line-height: 1.45; }
 .personaValidationFindings > div[data-tone="error"] { color: var(--critical); }
 .personaValidationFindings > div[data-tone="warning"] { color: var(--warning); }
+.personaTestBlock { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--edge); }
+.personaTestExplain { color: var(--faint); font-size: 10.5px; line-height: 1.5; margin: 8px 0 12px; }
+.personaTestPrepare, .personaTestStart, .personaTestStop { padding: 9px 12px;
+  border: 1px solid var(--accent); border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text);
+  font-size: 9.5px; font-weight: 700; letter-spacing: .1em; cursor: pointer; }
+.personaTestStart, .personaTestStop { margin-left: 8px; }
+.personaTestStop { border-color: var(--warning); }
+.personaTestPrepare:disabled, .personaTestStart:disabled { opacity: .4; cursor: default; }
+.personaTestSummary { color: var(--faint); font-size: 10.5px; line-height: 1.5; margin-top: 10px; }
+.personaTestSummary[data-tone="good"] { color: var(--good); }
+.personaTestSummary[data-tone="warning"] { color: var(--warning); }
+.personaTestResults { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.personaTestResults > section { padding: 12px; border: 1px solid var(--edge);
+  border-radius: 8px; background: var(--surface); }
+.personaTestResults > section[data-complete="true"] { border-color: color-mix(in srgb, var(--good) 45%, var(--edge)); }
+.personaTestResults [data-role="title"] { color: var(--text); font-size: 11px; font-weight: 700; }
+.personaTestResults [data-role="prompt"], .personaTestResults [data-role="expected"],
+.personaTestResults [data-role="observed"] { margin-top: 7px; color: var(--dim);
+  font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; user-select: text; }
+.personaTestResults [data-role="expected"] { color: var(--faint); }
+.personaTestResults [data-role="observed"] { color: var(--text); }
+.personaTestResults select { width: 100%; margin-top: 9px; padding: 7px 9px;
+  border: 1px solid var(--edge); border-radius: 7px; background: var(--bg); color: var(--text); }
 @media (max-width: 720px) {
   .personaActionGrid { grid-template-columns: 1fr; }
 }

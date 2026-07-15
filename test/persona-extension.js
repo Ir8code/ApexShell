@@ -14,6 +14,7 @@ const previewRenderer = require('../extensions/personas/lib/render');
 const personaContract = require('../extensions/personas/lib/contract');
 const previewValidator = require('../extensions/personas/lib/validator');
 const importer = require('../extensions/personas/lib/importer');
+const tester = require('../extensions/personas/lib/tester');
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'apex-persona-extension-'));
 let passed = 0;
@@ -847,6 +848,228 @@ function collaborationChoices(access = 'read-only') {
       assert.equal(bus.posts[0].payload.needsConfirmation, true);
     });
 
+    await gate('disposable test packet derives expectations from the approved persona', () => {
+      const draft = {
+        name: 'Rowan',
+        useCase: 'Review releases independently.',
+        answers: completeAnswers('Persona-specific evidence '.repeat(12)),
+      };
+      draft.preview = previewRenderer.renderBundle(draft, {
+        ...previewChoices(),
+        actions: { ...previewChoices().actions, read_files: 'allowed' },
+        collaboration: collaborationChoices(),
+      });
+      const cases = tester.buildCases(draft);
+      assert.equal(cases.length, 7);
+      assert.deepEqual(cases.map((item) => item.id), [
+        'introduction', 'normal-work', 'disagreement', 'uncertainty',
+        'action-gate', 'routine-action', 'handoff',
+      ]);
+      assert.match(cases.find((item) => item.id === 'action-gate').expected, /approved decision/);
+      assert.match(cases.find((item) => item.id === 'handoff').expected, /review packet/);
+      assert.match(cases.find((item) => item.id === 'normal-work').expected,
+        /Persona-specific evidence/);
+      const kickoff = tester.buildKickoff(draft, foundation.DEFAULT_FOUNDATION);
+      assert.match(kickoff, /session only/);
+      assert.match(kickoff, /Do not use tools/);
+      assert.match(kickoff, /TEST-SEAT-READY/);
+      assert.match(kickoff, /# Rowan/);
+    });
+
+    await gate('test bus checks usage, requires approval, and completes without registration', () => {
+      const stateDir = path.join(scratch, 'test-seat-state');
+      const workspace = path.join(scratch, 'test-seat-workspace');
+      fs.mkdirSync(workspace);
+      persona.writeWorkspaceConfig(stateDir, workspace);
+      foundation.createFoundation(workspace, foundation.DEFAULT_FOUNDATION);
+      let draft = draftStore.createDraft(stateDir, workspace, {
+        name: 'Rowan', useCase: 'Review releases independently.',
+      });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, {
+        answers: completeAnswers('Persona test evidence '.repeat(12)),
+      });
+      draft = draftStore.updateDraft(stateDir, draft.id, draft.revision, {
+        preview: previewRenderer.renderBundle(draft, {
+          ...previewChoices(),
+          actions: { ...previewChoices().actions, read_files: 'allowed' },
+          collaboration: collaborationChoices(),
+        }),
+      });
+      const bus = fakeBus();
+      let disposable;
+      const controllers = [];
+      persona.register({
+        bus,
+        stateDir,
+        async pickDirectory() { return null; },
+        usage: { claudeSnapshot() {
+          return { session: { pct: 10 }, weekly: { pct: 35 }, stale: false, asOf: Date.now() };
+        } },
+        seats: { startDisposable(options) {
+          disposable = options;
+          const controller = {
+            sent: [], closed: false,
+            send(text) { this.sent.push(text); },
+            close() { this.closed = true; },
+          };
+          controllers.push(controller);
+          return controller;
+        } },
+      });
+      bus.handlers.get('personaTestPrepare')({ id: draft.id });
+      assert.equal(bus.posts[0].type, 'personaTestPrepared');
+      assert.equal(bus.posts[0].payload.requiresApproval, true);
+      assert.equal(bus.posts[0].payload.usage.session.pct, 10);
+      const prepared = bus.posts[0].payload;
+      bus.posts.length = 0;
+      bus.handlers.get('personaTestStart')({
+        id: draft.id, expectedRevision: draft.revision, approved: true,
+      });
+      assert.match(disposable.kickoff, /TEST-SEAT-READY/);
+      assert.equal(disposable.cwd, undefined);
+      assert.equal(bus.posts[0].payload.phase, 'starting');
+      bus.handlers.get('personaTestStart')({
+        id: draft.id, expectedRevision: draft.revision, approved: true,
+      });
+      assert.equal(bus.posts.at(-1).payload.phase, 'rejected');
+      assert.equal(controllers[0].closed, false);
+      disposable.onEvent({ type: 'init', tools: [] });
+      disposable.onEvent({ type: 'text', text: 'TEST-SEAT-READY' });
+      disposable.onEvent({ type: 'result', ok: true });
+      assert.equal(controllers[0].sent[0], prepared.cases[0].prompt);
+      for (let index = 0; index < prepared.cases.length; index++) {
+        disposable.onEvent({ type: 'text', text: 'Observed response ' + index });
+        disposable.onEvent({ type: 'result', ok: true });
+      }
+      assert.equal(controllers[0].closed, true);
+      assert.equal(bus.posts.filter((post) => post.type === 'personaTestCaseResult').length,
+        prepared.cases.length);
+      assert.equal(bus.posts.at(-1).payload.phase, 'complete');
+      assert.equal(fs.existsSync(path.join(workspace, 'personas', 'rowan')), false);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaTestPrepare')({ id: draft.id });
+      const originalNow = Date.now;
+      const preparedAt = originalNow();
+      Date.now = () => preparedAt + 6 * 60 * 1000;
+      try {
+        bus.handlers.get('personaTestStart')({
+          id: draft.id, expectedRevision: draft.revision, approved: true,
+        });
+      } finally { Date.now = originalNow; }
+      assert.equal(bus.posts.at(-1).payload.phase, 'rejected');
+      assert.match(bus.posts.at(-1).payload.error, /usage check expired/);
+      assert.equal(controllers.length, 1);
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaTestStart')({
+        id: draft.id, expectedRevision: draft.revision, approved: true,
+      });
+      disposable.onEvent({ type: 'tool', name: 'Read' });
+      assert.equal(controllers[1].closed, true);
+      assert.equal(bus.posts.at(-1).payload.phase, 'error');
+
+      bus.posts.length = 0;
+      bus.handlers.get('personaTestPrepare')({ id: draft.id });
+      bus.handlers.get('personaTestStart')({
+        id: draft.id, expectedRevision: draft.revision, approved: true,
+      });
+      bus.handlers.get('personaTestStop')({});
+      assert.equal(controllers[2].closed, true);
+      assert.equal(bus.posts.at(-1).payload.phase, 'stopped');
+
+      bus.handlers.get('personaTestPrepare')({ id: draft.id });
+      bus.handlers.get('personaTestStart')({
+        id: draft.id, expectedRevision: draft.revision, approved: true,
+      });
+      disposable.onEvent({ type: 'permission', tool: 'Read' });
+      assert.equal(controllers[3].closed, true);
+      assert.equal(bus.posts.at(-1).payload.phase, 'error');
+
+      bus.handlers.get('personaTestPrepare')({ id: draft.id });
+      bus.handlers.get('personaTestStart')({
+        id: draft.id, expectedRevision: draft.revision, approved: true,
+      });
+      disposable.onEvent({ type: 'dead', code: 1 });
+      assert.equal(controllers[4].closed, true);
+      assert.equal(bus.posts.at(-1).payload.phase, 'error');
+
+      bus.handlers.get('personaTestPrepare')({ id: draft.id });
+      bus.handlers.get('personaTestStart')({
+        id: draft.id, expectedRevision: draft.revision, approved: true,
+      });
+      disposable.onEvent({ type: 'init', tools: ['Read'] });
+      assert.equal(controllers[5].closed, true);
+      assert.match(bus.posts.at(-1).payload.error, /empty tool list/);
+    });
+
+    await gate('hidden disposable host stays out of roster and persistent history', () => {
+      const claudePath = require.resolve('../main/engine/claudeSeat');
+      const hostPath = require.resolve('../main/engine/seatHost');
+      const actualClaude = require(claudePath);
+      const disposableArgs = actualClaude.buildArgs({
+        noSessionPersistence: true, tools: '', permissionMode: 'manual', shell: false,
+      });
+      const toolsIndex = disposableArgs.indexOf('--tools');
+      assert.notEqual(toolsIndex, -1);
+      assert.equal(disposableArgs[toolsIndex + 1], '');
+      assert.deepEqual(disposableArgs.slice(-2), ['--permission-mode', 'manual']);
+      const shellArgs = actualClaude.buildArgs({ tools: '', permissionMode: 'manual', shell: true });
+      assert.equal(shellArgs[shellArgs.indexOf('--tools') + 1], '""');
+      const resolvedClaude = actualClaude.resolveClaudeLaunch();
+      if (process.platform === 'win32' && resolvedClaude.command.toLowerCase().endsWith('.exe'))
+        assert.equal(resolvedClaude.shell, false);
+      let launch;
+      const fakeSeat = {
+        sent: [], disposed: false,
+        send(text) { this.sent.push(text); },
+        interrupt() {},
+        dispose() { this.disposed = true; },
+      };
+      require.cache[claudePath].exports = {
+        ...actualClaude,
+        startSeat(options) { launch = options; return fakeSeat; },
+      };
+      delete require.cache[hostPath];
+      try {
+        const { createSeatHost } = require(hostPath);
+        const emitted = [];
+        const recorded = [];
+        const observed = [];
+        const host = createSeatHost({
+          apexRoot: scratch,
+          emit(message) { emitted.push(message); },
+          log() {},
+          record(...args) { recorded.push(args); },
+        });
+        const disposableSeat = host.createDisposable({
+          kickoff: 'temporary kickoff',
+          onEvent(message) { observed.push(message); },
+        });
+        assert.equal(launch.noSessionPersistence, true);
+        assert.equal(launch.tools, '');
+        assert.equal(launch.permissionMode, 'manual');
+        assert.equal(path.dirname(launch.cwd), os.tmpdir());
+        assert.match(path.basename(launch.cwd), /^apex-disposable-/);
+        assert.equal(fs.existsSync(launch.cwd), true);
+        assert.deepEqual(host.list(), []);
+        assert.deepEqual(emitted, []);
+        assert.deepEqual(recorded, []);
+        assert.deepEqual(fakeSeat.sent, ['temporary kickoff']);
+        launch.onEvent({ type: 'system', subtype: 'init', session_id: 'ephemeral', model: 'test', tools: [] });
+        assert.deepEqual(observed[0].tools, []);
+        launch.onEvent({ type: 'assistant', message: { content: [{ type: 'text', text: 'observed' }] } });
+        assert.equal(observed[1].text, 'observed');
+        disposableSeat.close();
+        assert.equal(fakeSeat.disposed, true);
+        launch.onExit(0);
+        assert.equal(fs.existsSync(launch.cwd), false);
+      } finally {
+        require.cache[claudePath].exports = actualClaude;
+        delete require.cache[hostPath];
+      }
+    });
+
     await gate('renderer registers dock and drives workspace messages', () => {
       function makeNode() {
         return {
@@ -1095,6 +1318,37 @@ function collaborationChoices(access = 'read-only') {
         nodes.get('.personaAcceptCanonical').listeners.click();
         assert.equal(posts.at(-1).type, 'personaPreviewAcceptCanonical');
         assert.equal(posts.at(-1).payload.expectedRevision, 7);
+        nodes.get('.personaTestPrepare').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaTestPrepare');
+        handlers.get('personaTestPrepared')({
+          draftId: previewUiDraft.id,
+          revision: 7,
+          usage: { session: { pct: 10 }, weekly: { pct: 35 }, stale: false, asOf: Date.now() },
+          cases: [
+            { id: 'introduction', title: 'Introduction', prompt: 'Introduce yourself.', expected: 'Match identity.' },
+            { id: 'uncertainty', title: 'Uncertainty', prompt: 'Handle it.', expected: 'Follow method.' },
+          ],
+        });
+        assert.match(nodes.get('.personaTestSummary').textContent, /5-hour 10%/);
+        assert.equal(nodes.get('.personaTestResults').children.length, 2);
+        assert.equal(nodes.get('.personaTestStart').hidden, false);
+        nodes.get('.personaTestStart').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaTestStart');
+        assert.equal(posts.at(-1).payload.approved, true);
+        handlers.get('personaTestStatus')({ phase: 'running', index: 0, total: 2 });
+        assert.match(nodes.get('.personaTestSummary').textContent, /case 1 of 2/);
+        handlers.get('personaTestStatus')({ phase: 'rejected', error: 'Duplicate start rejected.' });
+        assert.match(nodes.get('.personaTestSummary').textContent, /TEST CONTINUES/);
+        assert.equal(nodes.get('.personaTestStop').hidden, false);
+        handlers.get('personaTestCaseResult')({
+          caseId: 'introduction', response: 'Observed persona introduction.',
+        });
+        assert.match(nodes.get('.personaTestResults').children[0].children[3].textContent,
+          /Observed persona introduction/);
+        nodes.get('.personaTestStop').listeners.click();
+        assert.equal(posts.at(-1).type, 'personaTestStop');
+        handlers.get('personaTestStatus')({ phase: 'stopped' });
+        assert.match(nodes.get('.personaTestSummary').textContent, /No session was saved/);
         nodes.get('.personaCanonicalPreview').value = uiBundle.canonical.replace('# Rowan', '# Rowan edited');
         nodes.get('.personaCanonicalPreview').listeners.input();
         assert.equal(nodes.get('.personaCanonicalSave').disabled, false);
@@ -1135,7 +1389,7 @@ function collaborationChoices(access = 'read-only') {
       }
     });
 
-    console.log(`PERSONA EXTENSION: ${passed}/41 passed`);
+    console.log(`PERSONA EXTENSION: ${passed}/44 passed`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

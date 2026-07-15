@@ -110,7 +110,7 @@ function createWindow() {
   theme.register();
   monitors.register();
   seats.register();
-  extensions.register({ seats: seats.extensionApi });
+  extensions.register({ seats: seats.extensionApi, usage: { claudeSnapshot: usage.claudeSnapshot } });
   terminal.register({ cwd: seats.defaultCwd });
   liveUpdate.register(() => win);
   liveUpdate.consumeRestore();

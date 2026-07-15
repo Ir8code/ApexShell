@@ -25,6 +25,10 @@ const extensionApi = {
   },
   setDefaultCwd(dir) { if (dir && fs.existsSync(dir)) cwdOverride = dir; },
   setWrapPrompt(text) { if (typeof text === 'string' && text) wrapOverride = text; },
+  startDisposable(options) {
+    if (!host) throw new Error('Seat engine is unavailable.');
+    return host.createDisposable(options || {});
+  },
 };
 
 // Bare default: the configured workspace folder (seatconfig `_workspace`),

@@ -126,6 +126,7 @@
         '<div class="personaSectionRegen"><select class="personaSectionSelect"></select><button class="personaSectionRegenerate" type="button">REGENERATE SECTION</button></div>' +
         '<div class="personaPreviewError personaPreviewReviewError"></div>' +
         '<div class="personaValidationBlock"><button class="personaValidatePreview" type="button">VALIDATE PREVIEW</button><button class="personaAcceptCanonical" type="button" hidden>ACCEPT MANUAL CANONICAL HASH</button><div class="personaValidationSummary"></div><div class="personaValidationFindings"></div></div>' +
+        '<div class="personaTestBlock"><div class="personaInterviewSubhead">DISPOSABLE BEHAVIOR TEST</div><p class="personaTestExplain">Checks current Claude usage, then runs persona-derived prompts in a hidden tool-disabled session that is not saved or registered.</p><button class="personaTestPrepare" type="button">CHECK USAGE &amp; PREPARE</button><button class="personaTestStart" type="button" hidden>START DISPOSABLE TEST</button><button class="personaTestStop" type="button" hidden>STOP TEST</button><div class="personaTestSummary"></div><div class="personaTestResults"></div></div>' +
         '<div class="personaInterviewActions"><button class="personaPreviewDrafts" type="button">DRAFTS</button><button class="personaPreviewBack" type="button">BACK TO INTERVIEW</button><button class="personaPreviewRegenerateAll" type="button">REGENERATE ALL</button></div>' +
       '</section>' +
       '<p class="personaBuilderFoot">This setting stays on this Apex installation. Model, provider, credentials, and runtime permissions stay outside the personas you build.</p>' +
@@ -197,6 +198,11 @@
   const acceptCanonical = pane.querySelector('.personaAcceptCanonical');
   const validationSummary = pane.querySelector('.personaValidationSummary');
   const validationFindings = pane.querySelector('.personaValidationFindings');
+  const testPrepare = pane.querySelector('.personaTestPrepare');
+  const testStart = pane.querySelector('.personaTestStart');
+  const testStop = pane.querySelector('.personaTestStop');
+  const testSummary = pane.querySelector('.personaTestSummary');
+  const testResults = pane.querySelector('.personaTestResults');
   const actionCategories = ['read_files', 'edit_files', 'run_commands', 'search_web',
     'use_connectors', 'send_external', 'change_system', 'delete_data'];
   const actionSelects = Object.fromEntries(actionCategories.map((category) =>
@@ -230,6 +236,9 @@
   let canonicalDirty = false;
   let activeImportAudit = null;
   let importMapSelects = [];
+  let preparedTest = null;
+  let testRows = new Map();
+  let testRunning = false;
 
   function setChoosing(value) {
     choosing = value;
@@ -573,6 +582,14 @@
     validationSummary.textContent = '';
     validationFindings.replaceChildren();
     acceptCanonical.hidden = true;
+    preparedTest = null;
+    testRows = new Map();
+    testRunning = false;
+    testSummary.textContent = '';
+    testResults.replaceChildren();
+    testPrepare.disabled = false;
+    testStart.hidden = true;
+    testStop.hidden = true;
     sectionSelect.replaceChildren();
     for (const card of interviewCards) {
       const option = document.createElement('option');
@@ -668,6 +685,112 @@
     setImportCreateState();
   }
 
+  function usageLabel(usage) {
+    if (!usage) return 'Usage is unavailable. Starting the test requires your explicit approval.';
+    const session = usage.session && Number.isFinite(usage.session.pct) ? usage.session.pct + '%' : '—';
+    const weekly = usage.weekly && Number.isFinite(usage.weekly.pct) ? usage.weekly.pct + '%' : '—';
+    const age = usage.asOf ? Math.max(0, Math.round((Date.now() - usage.asOf) / 1000)) : null;
+    return `${usage.stale ? 'STALE USAGE' : 'USAGE CHECKED'} · 5-hour ${session} · 7-day ${weekly}` +
+      (age === null ? '' : ` · ${age}s ago`);
+  }
+
+  function renderTestPrepared(message) {
+    preparedTest = { id: message.draftId, revision: message.revision };
+    testRows = new Map();
+    testResults.replaceChildren();
+    for (const item of message.cases || []) {
+      const row = document.createElement('section');
+      row.dataset.caseId = item.id;
+      const title = document.createElement('div');
+      title.textContent = item.title;
+      title.dataset.role = 'title';
+      const prompt = document.createElement('div');
+      prompt.textContent = 'PROMPT · ' + item.prompt;
+      prompt.dataset.role = 'prompt';
+      const expected = document.createElement('div');
+      expected.textContent = 'EXPECTED · ' + item.expected;
+      expected.dataset.role = 'expected';
+      const observed = document.createElement('div');
+      observed.textContent = 'OBSERVED · waiting';
+      observed.dataset.role = 'observed';
+      const rating = document.createElement('select');
+      for (const choice of [['', 'Review outcome…'], ['pass', 'Matches persona'], ['revise', 'Needs revision']]) {
+        const option = document.createElement('option');
+        option.value = choice[0];
+        option.textContent = choice[1];
+        rating.appendChild(option);
+      }
+      row.appendChild(title);
+      row.appendChild(prompt);
+      row.appendChild(expected);
+      row.appendChild(observed);
+      row.appendChild(rating);
+      testResults.appendChild(row);
+      testRows.set(item.id, { row, observed, rating });
+    }
+    testSummary.textContent = usageLabel(message.usage) +
+      ` · ${message.cases.length} persona-derived cases prepared. Review the numbers, then start explicitly.`;
+    testSummary.dataset.tone = message.usage && !message.usage.stale ? 'good' : 'warning';
+    testPrepare.disabled = false;
+    testStart.hidden = false;
+    testStart.disabled = false;
+    testStop.hidden = true;
+  }
+
+  function renderTestStatus(message) {
+    if (message.phase === 'rejected') {
+      testSummary.textContent = (testRunning ? 'TEST CONTINUES · ' : 'TEST NOT STARTED · ') + message.error;
+      testSummary.dataset.tone = 'warning';
+      if (!testRunning) {
+        testPrepare.disabled = false;
+        testStart.hidden = true;
+        testStop.hidden = true;
+      }
+      return;
+    }
+    if (message.phase === 'error') {
+      testRunning = false;
+      testSummary.textContent = 'TEST BLOCKED · ' + message.error;
+      testSummary.dataset.tone = 'warning';
+      testPrepare.disabled = false;
+      testStart.hidden = true;
+      testStop.hidden = true;
+      return;
+    }
+    if (message.phase === 'starting') {
+      testRunning = true;
+      testSummary.textContent = `Disposable seat starting · ${message.total} cases queued.`;
+      testPrepare.disabled = true;
+      testStart.hidden = true;
+      testStop.hidden = false;
+    } else if (message.phase === 'running') {
+      testRunning = true;
+      testSummary.textContent = `Running case ${message.index + 1} of ${message.total}.`;
+      testPrepare.disabled = true;
+      testStop.hidden = false;
+    } else if (message.phase === 'complete') {
+      testRunning = false;
+      testSummary.textContent = `TEST COMPLETE · ${message.total} observed responses. Mark each result, then revise the interview or canonical where needed.`;
+      testSummary.dataset.tone = 'good';
+      testPrepare.disabled = false;
+      testStart.hidden = true;
+      testStop.hidden = true;
+    } else if (message.phase === 'stopped') {
+      testRunning = false;
+      testSummary.textContent = 'Disposable test stopped. No session was saved.';
+      testPrepare.disabled = false;
+      testStart.hidden = true;
+      testStop.hidden = true;
+    }
+  }
+
+  function renderTestCaseResult(message) {
+    const target = testRows.get(message.caseId);
+    if (!target) return;
+    target.observed.textContent = 'OBSERVED · ' + message.response;
+    target.row.dataset.complete = 'true';
+  }
+
   ApexBus.on('personaWorkspaceStatus', renderWorkspace);
   ApexBus.on('personaFoundationStatus', renderFoundation);
   ApexBus.on('personaFoundationResult', renderFoundationResult);
@@ -679,6 +802,9 @@
   ApexBus.on('personaValidationStatus', renderValidationStatus);
   ApexBus.on('personaImportAudit', renderImportAudit);
   ApexBus.on('personaImportResult', renderImportResult);
+  ApexBus.on('personaTestPrepared', renderTestPrepared);
+  ApexBus.on('personaTestStatus', renderTestStatus);
+  ApexBus.on('personaTestCaseResult', renderTestCaseResult);
   choose.addEventListener('click', () => {
     if (choosing) return;
     setChoosing(true);
@@ -862,6 +988,24 @@
       expectedRevision: currentDraft.revision,
     });
   });
+  testPrepare.addEventListener('click', () => {
+    if (canonicalDirty) {
+      previewReviewError.textContent = 'Save or restore the canonical edit before preparing a test.';
+      return;
+    }
+    testPrepare.disabled = true;
+    ApexBus.post('personaTestPrepare', { id: currentDraft.id });
+  });
+  testStart.addEventListener('click', () => {
+    if (!preparedTest || testStart.disabled) return;
+    testStart.disabled = true;
+    ApexBus.post('personaTestStart', {
+      id: preparedTest.id,
+      expectedRevision: preparedTest.revision,
+      approved: true,
+    });
+  });
+  testStop.addEventListener('click', () => ApexBus.post('personaTestStop', {}));
 
   ApexShell.registerDockPane(pane, { order: 20 });
   ApexBus.post('personaWorkspaceGet', {});

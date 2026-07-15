@@ -11,8 +11,10 @@ const { CARDS } = require('./lib/interview');
 const previewRenderer = require('./lib/render');
 const previewValidator = require('./lib/validator');
 const importer = require('./lib/importer');
+const tester = require('./lib/tester');
 
 const CONFIG_FILE = 'workspace.json';
+const TEST_PREPARE_TTL_MS = 5 * 60 * 1000;
 
 function configPath(stateDir) {
   if (typeof stateDir !== 'string' || !path.isAbsolute(stateDir))
@@ -122,6 +124,8 @@ function register(ctx) {
     throw new Error('Persona Builder requires the directory-picker service.');
   configPath(ctx.stateDir); // validate once at load, before registering handlers
   let activeImportAudit = null;
+  let preparedTest = null;
+  let activeTest = null;
 
   const publishStatus = () => ctx.bus.post('personaWorkspaceStatus', workspaceStatus(ctx.stateDir));
   const publishFoundation = () =>
@@ -409,6 +413,165 @@ function register(ctx) {
       ctx.bus.post('personaImportResult', { ok: false, action: 'create-draft', error: err.message });
       ctx.bus.post('toast', { text: 'Imported draft was not created: ' + err.message });
     }
+  });
+
+  const testFailure = (error) => {
+    const run = activeTest;
+    activeTest = null;
+    if (run && run.controller) run.controller.close();
+    ctx.bus.post('personaTestStatus', { phase: 'error', error: error.message || String(error) });
+  };
+
+  ctx.bus.on('personaTestPrepare', (message) => {
+    if (activeTest) {
+      ctx.bus.post('personaTestStatus', {
+        phase: 'rejected', error: 'Stop the active disposable test before preparing another.',
+      });
+      return;
+    }
+    try {
+      const draft = currentWorkspaceDraft(message && message.id);
+      const workspace = interviewWorkspace(ctx.stateDir);
+      const foundationText = foundation.inspectFoundation(workspace).content;
+      const report = previewValidator.validatePreview(workspace, draft, foundationText);
+      if (!report.valid)
+        throw new Error('Resolve blocking preview validation errors before testing.');
+      const cases = tester.buildCases(draft);
+      const usage = ctx.usage && typeof ctx.usage.claudeSnapshot === 'function'
+        ? ctx.usage.claudeSnapshot() : null;
+      const usageFresh = Boolean(usage && usage.asOf && !usage.stale &&
+        Date.now() - usage.asOf <= 5 * 60 * 1000);
+      preparedTest = {
+        draftId: draft.id,
+        revision: draft.revision,
+        preparedAt: Date.now(),
+        sourceHash: draft.preview.generatedCanonicalHash,
+        kickoff: tester.buildKickoff(draft, foundationText),
+        cases,
+      };
+      ctx.bus.post('personaTestPrepared', {
+        draftId: draft.id,
+        revision: draft.revision,
+        cases,
+        usage: usage ? {
+          session: usage.session || null,
+          weekly: usage.weekly || null,
+          asOf: usage.asOf || null,
+          stale: !usageFresh,
+        } : null,
+        requiresApproval: true,
+      });
+    } catch (err) {
+      preparedTest = null;
+      ctx.bus.post('personaTestStatus', { phase: 'error', error: err.message });
+    }
+  });
+
+  ctx.bus.on('personaTestStart', (message) => {
+    let startingRun = null;
+    try {
+      if (!message || message.approved !== true)
+        throw new Error('Starting a disposable Claude test requires explicit approval after the usage check.');
+      if (!preparedTest || message.id !== preparedTest.draftId ||
+          message.expectedRevision !== preparedTest.revision)
+        throw new Error('Prepare the disposable test again from the current draft.');
+      if (Date.now() - preparedTest.preparedAt > TEST_PREPARE_TTL_MS)
+        throw new Error('The usage check expired; prepare the disposable test again.');
+      if (activeTest) throw new Error('A disposable test is already running.');
+      if (!ctx.seats || typeof ctx.seats.startDisposable !== 'function')
+        throw new Error('Disposable seat service is unavailable.');
+      const current = currentWorkspaceDraft(message.id);
+      if (current.revision !== preparedTest.revision ||
+          current.preview.generatedCanonicalHash !== preparedTest.sourceHash)
+        throw new Error('The draft changed; prepare the test again.');
+
+      const run = {
+        controller: null,
+        cases: preparedTest.cases,
+        index: -1,
+        phase: 'boot',
+        toolsVerified: false,
+        finalText: '',
+        deltaText: '',
+      };
+      startingRun = run;
+      const sendCase = () => {
+        run.index++;
+        if (run.index >= run.cases.length) {
+          activeTest = null;
+          run.controller.close();
+          ctx.bus.post('personaTestStatus', { phase: 'complete', total: run.cases.length });
+          return;
+        }
+        run.phase = 'case';
+        run.finalText = '';
+        run.deltaText = '';
+        const currentCase = run.cases[run.index];
+        ctx.bus.post('personaTestStatus', {
+          phase: 'running', index: run.index, total: run.cases.length, caseId: currentCase.id,
+        });
+        run.controller.send(currentCase.prompt);
+      };
+      const onEvent = (event) => {
+        if (activeTest !== run) return;
+        if (event.type === 'init') {
+          if (!Array.isArray(event.tools) || event.tools.length !== 0) {
+            testFailure(new Error('Disposable seat did not launch with an empty tool list.'));
+            return;
+          }
+          run.toolsVerified = true;
+        } else if (event.type === 'text')
+          run.finalText += (run.finalText ? '\n\n' : '') + (event.text || '');
+        else if (event.type === 'delta') run.deltaText += event.text || '';
+        else if (event.type === 'permission' || event.type === 'tool') {
+          testFailure(new Error('Disposable test requested an unavailable tool; the test was stopped.'));
+        } else if (event.type === 'result') {
+          if (!event.ok) { testFailure(new Error('Disposable test turn failed.')); return; }
+          const answer = (run.finalText || run.deltaText).trim();
+          if (run.phase === 'boot') {
+            if (!run.toolsVerified) {
+              testFailure(new Error('Disposable seat tool isolation was not verified.'));
+              return;
+            }
+            if (!answer.includes('TEST-SEAT-READY')) {
+              testFailure(new Error('Disposable seat did not accept the draft persona cleanly.'));
+              return;
+            }
+            sendCase();
+            return;
+          }
+          const completedCase = run.cases[run.index];
+          ctx.bus.post('personaTestCaseResult', {
+            index: run.index,
+            caseId: completedCase.id,
+            prompt: completedCase.prompt,
+            expected: completedCase.expected,
+            response: answer || '(no text response)',
+          });
+          sendCase();
+        } else if (event.type === 'dead') {
+          testFailure(new Error('Disposable seat exited before the test completed.'));
+        }
+      };
+      activeTest = run;
+      run.controller = ctx.seats.startDisposable({
+        kickoff: preparedTest.kickoff,
+        onEvent,
+      });
+      preparedTest = null;
+      ctx.bus.post('personaTestStatus', { phase: 'starting', total: run.cases.length });
+    } catch (err) {
+      if (startingRun && activeTest === startingRun) testFailure(err);
+      else ctx.bus.post('personaTestStatus', { phase: 'rejected', error: err.message });
+    }
+  });
+
+  ctx.bus.on('personaTestStop', () => {
+    if (!activeTest) return;
+    const run = activeTest;
+    activeTest = null;
+    run.controller.close();
+    ctx.bus.post('personaTestStatus', { phase: 'stopped' });
   });
 }
 
