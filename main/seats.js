@@ -10,6 +10,7 @@ const os = require('os');
 const bus = require('./bus');
 const store = require('./store');
 const artifacts = require('./artifacts');
+const todo = require('./todo');
 const { createSeatHost } = require('./engine/seatHost');
 
 // ---- seat presets: the shell ships ZERO named seats. Extensions register a
@@ -142,6 +143,7 @@ function register() {
     apexRoot: defaultCwd(),          // fallback only — every create passes cwd
     wrapPrompt: () => wrapOverride,  // lazy: extensions register after us
     emit: (m) => {
+      todo.onSeatEvent(m);                         // seat lifecycle → todo tracker (J90)
       if (m.type === 'seatEvt' && m.m.type === 'artifactCandidate') {
         artifacts.candidate(m.id, m.m.path);       // app-level concern, not engine
         return;
@@ -165,14 +167,22 @@ function register() {
     windowsFile: path.join(__dirname, '..', 'state', 'model-windows.json'),
   });
 
+  // per-seat todo tracker (J90): bus verbs + the state dir; engine untouched
+  todo.register({ host, bus,
+    stateDir: path.join(__dirname, '..', 'state', 'todo'),
+    log: (l) => wireLog(l) });
+
   // view → engine (exact types — the engine validates its own set again).
   // seatPtyInput/seatPtyResize were in the ENGINE's claim set but never
   // registered here — every terminal keystroke died at the bus (2026-07-12).
-  for (const t of ['seatSend', 'seatPerm', 'seatStop', 'seatMode',
+  // seatSend detours through the todo brief: the seat's todo-file path rides
+  // the FIRST user turn invisibly (the env-brief lane — '<' prefix).
+  for (const t of ['seatPerm', 'seatStop', 'seatMode',
                    'seatModel', 'seatPtyInput', 'seatPtyResize', 'seatReplay',
                    'seatWrap'])
     bus.on(t, (msg) => host.handle(msg));
-  bus.on('seatClose', (msg) => { artifacts.seatClosed(msg.id); host.handle(msg); });
+  bus.on('seatSend', (msg) => host.handle(todo.briefOnFirstSend(msg)));
+  bus.on('seatClose', (msg) => { artifacts.seatClosed(msg.id); todo.seatClosed(msg.id); host.handle(msg); });
 
   createFromMessage = (msg) => {
     if (msg.terminal) {
@@ -282,6 +292,7 @@ function register() {
     if (!msg.effort && !msg.permissions) return;
     const { sessionId, persona, title, mode, model, codexModel, effort } = entry;
     artifacts.seatClosed(msg.id);
+    todo.seatClosed(msg.id);   // the resumed seat re-binds the same file (J90)
     host.handle({ type: 'seatClose', id: msg.id });
     bus.post('seatGone', { id: msg.id });
     setTimeout(() => {                       // past the kill backstop: transcript flushed

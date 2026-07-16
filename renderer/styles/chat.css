@@ -57,13 +57,16 @@
    dock rack — the "rough corner" (the operator, 2026-07-14). The line now dissolves
    at both ends instead of ending. */
 #chatMain { flex: 1; display: flex; min-height: 0; position: relative; }
+/* the line hugs the CHAT COLUMN, not the window (the operator, 2026-07-15) —
+   the vars are set by chatView's alignTabs() from the active composer's box */
 #chatMain::before {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+  content: ''; position: absolute; top: 0; height: 1px;
+  left: var(--tabLeft, 0); width: var(--tabW, 100%);
   background: linear-gradient(90deg, transparent, var(--edge) 16px,
               var(--edge) calc(100% - 16px), transparent);
   pointer-events: none; z-index: 1;
 }
-.chatWrap { flex: 1; display: flex; min-width: 0; min-height: 0; }
+.chatWrap { flex: 1; display: flex; min-width: 0; min-height: 0; position: relative; }
 .chatWrap[hidden] { display: none; }
 .chatCol { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
@@ -131,9 +134,14 @@
 .ctxTop .lbl:hover { color: var(--text); border-color: var(--accent); }
 /* focus ring: the global policy in base.css (J57) covers every control */
 
-/* ---- the feed: one column, document flow (the official-panel read) ---- */
+/* ---- the feed: one column, document flow (the official-panel read) ----
+   The feed element IS the column now (the operator, 2026-07-15): its scrollbar hugs
+   the text instead of drifting to the window edge, and the sides read as two
+   big quiet panels (the right one carries the checklist). */
 .feed {
   flex: 1;
+  width: min(860px, 100% - 28px);
+  align-self: center;
   overflow-y: auto;
   padding: 14px 18px 10px;
   font-size: 13px;
@@ -154,7 +162,7 @@
 .feed a.pathLink:hover, .feed a.webLink:hover { border-bottom-style: solid; }
 .toolRow .tdetail.pathLink { color: var(--accent); cursor: pointer; }
 .toolRow .tdetail.pathLink:hover { text-decoration: underline dotted; }
-.feed > * { max-width: 860px; margin: 0 auto 10px; }
+.feed > * { margin: 0 0 10px; }   /* the feed itself is width-capped now */
 
 .msg.user {
   color: var(--text);
@@ -461,3 +469,112 @@
 #seatCfg .cfgBtns button:hover { color: var(--text); border-color: var(--accent); }
 
 #seatCfg select:disabled { opacity: .38; cursor: default; }
+
+/* ---- markdown tables in the feed (J89) — quiet grid, theme-native ---- */
+.feed table.mdTable {
+  border-collapse: collapse;
+  margin: 2px 0 10px;
+  font-size: 12.5px;
+  display: block;              /* wide tables scroll, never blow the column */
+  overflow-x: auto;
+  max-width: 100%;
+  width: fit-content;
+}
+.feed .mdTable th, .feed .mdTable td {
+  border: 1px solid var(--edge);
+  padding: 4px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.feed .mdTable th {
+  color: var(--dim);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--surface) 65%, transparent);
+}
+.feed .mdTable .al-center { text-align: center; }
+.feed .mdTable .al-right  { text-align: right; }
+
+/* ---- the checklist pane (J90): the operator's constant tracker, right rail ----
+   Restyled 2026-07-15 (operator ruling): NO divider, NO boxes — one solid panel, the
+   list reads as floating faded text; done items fade further but stay
+   readable; the add affordance is a bare ＋ under the list. */
+.todoPane {
+  /* FLOATS in the blank right margin (the operator, 2026-07-15: "I didn't want chat
+     to move around") — absolute, out of the flex flow, so the chat column
+     stays window-centered exactly as it was before the pane existed */
+  position: absolute;
+  right: 8px; top: 0; bottom: 0;
+  width: 232px;
+  padding: 14px 16px 10px 6px;
+  overflow-y: auto;
+  font-size: 12px;
+  color: var(--dim);
+}
+.todoPane[hidden] { display: none; }
+/* not enough blank margin to float in → the checklist yields to the chat
+   (the file keeps tracking; the pane returns when the window widens) */
+@media (max-width: 1460px) { .todoPane { display: none; } }
+.tpHead {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; letter-spacing: .14em;
+  color: color-mix(in srgb, var(--faint) 75%, transparent);
+  margin-bottom: 8px;
+}
+.tpHead .tpCount { margin-left: auto; letter-spacing: 0; }
+.tpAdd {
+  background: none; border: none; padding: 2px;
+  color: color-mix(in srgb, var(--faint) 80%, transparent);
+  cursor: pointer; font-size: 13px; line-height: 1;
+  margin-top: 2px; text-align: left;
+}
+.tpAdd:hover { color: var(--accent); }
+.tpRow {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 3px 2px;
+}
+.tpRow input[type="checkbox"] {
+  accent-color: var(--accent); margin: 0; position: relative; top: 2px;
+  cursor: pointer; opacity: .7;
+}
+.tpBullet { color: var(--faint); font-size: 9px; }
+.tpRow .tpTitle { color: var(--dim); overflow-wrap: anywhere; flex: 1; }
+.tpRow:hover .tpTitle { color: var(--text); }
+/* done = faded but readable (no strike — the operator's wording) */
+.tpRow.done { opacity: .45; }
+.tpChip { font-size: 10px; color: var(--faint); white-space: nowrap; }
+.tpChip.user  { color: color-mix(in srgb, var(--warning) 70%, transparent); }
+.tpChip.model { color: color-mix(in srgb, var(--accent) 70%, transparent); }
+.tpStatus { font-size: 11px; }
+.tpStatus.in-progress { color: var(--accent); }
+.tpStatus.blocked     { color: var(--critical); }
+.tpEdit {
+  background: none; border: none; color: var(--faint); cursor: pointer;
+  font-size: 11px; padding: 0 2px; opacity: 0;
+}
+.tpRow:hover .tpEdit { opacity: 1; }
+.tpEdit:hover { color: var(--accent); }
+.tpEmpty { color: var(--faint); font-style: italic; }
+.tpErr { color: var(--critical); font-size: 11px; margin-bottom: 6px; }
+.tpForm {
+  display: flex; flex-direction: column; gap: 5px;
+  border: 1px solid var(--edge); border-radius: 6px;
+  padding: 8px; margin-top: 8px;
+}
+/* author display beats the UA's [hidden] — without this the create menu
+   showed PERMANENTLY and an Enter-key submit double-entered (the operator's find,
+   first live evening) */
+.tpForm[hidden] { display: none; }
+.tpForm .tpTaskFields { display: flex; flex-direction: column; gap: 5px; }
+.tpForm .tpTaskFields[hidden] { display: none; }
+.tpForm input, .tpForm select {
+  background: var(--bg); border: 1px solid var(--edge); border-radius: 4px;
+  color: var(--text); font-size: 12px; padding: 3px 6px; outline: none;
+}
+.tpForm input:focus, .tpForm select:focus { border-color: var(--accent); }
+.tpBtns { display: flex; gap: 6px; }
+.tpBtns button {
+  border: 1px solid var(--edge); background: var(--surface); color: var(--dim);
+  font-size: 11px; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+}
+.tpBtns button:hover { color: var(--text); border-color: var(--accent); }
+.tpBtns .tpDelete:hover { color: var(--critical); border-color: var(--critical); }

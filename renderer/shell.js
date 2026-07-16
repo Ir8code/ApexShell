@@ -175,12 +175,18 @@
       if (top !== id) { raise(id); persist(); return; }
       s = 'collapsed';
     }
-    if (s !== 'collapsed')   // opening ANY tab evicts another tab's quarter (J14)
+    if (s !== 'collapsed') {  // opening ANY tab evicts another tab's quarter (J14)
       tabIds.forEach((t) => { if (t !== id && store.tabs[t] === 'quarter') { store.tabs[t] = 'collapsed'; renderDock(t); } });
+      // raise BEFORE the state flips: raise() instant-renders every pane, and
+      // rendering the opening pane's NEW state with transition:none made left
+      // tabs SNAP open (the operator, 2026-07-15) — close stayed smooth only
+      // because collapsing never raises. Raised at the OLD state, the pane
+      // doesn't move here; the animated renderDock below does the slide.
+      raise(id);
+    }
     const hadFull = anyDockFull();
     store.tabs[id] = s;
-    if (s !== 'collapsed') raise(id);
-    else store.zsq = store.zsq.filter((x) => x !== id);
+    if (s === 'collapsed') store.zsq = store.zsq.filter((x) => x !== id);
     if (s === 'full' && store.right !== 'collapsed') {
       store.memRight = store.right; setRight('collapsed', false, true);
     }

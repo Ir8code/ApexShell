@@ -31,19 +31,21 @@ window.ApexChat = (function () {
 
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-  // Markdown-lite over ESCAPED text — fenced code, inline code, bold,
-  // heading lines. Model output never reaches innerHTML unescaped. The shared
-  // linkifier recognizes bounded Windows paths and visible-target HTTP(S).
+  // Markdown-lite over ESCAPED text — fenced code, tables (J89), inline code,
+  // bold, heading lines. Model output never reaches innerHTML unescaped. The
+  // shared linkifier recognizes bounded Windows paths and visible-target
+  // HTTP(S); the table module reuses this same inline chain per cell.
   const linkify = (s) => ApexLinkify.linkifyEscaped(s);
+  const inlineMd = (s) => linkify(s)
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/^(#{1,4}) (.+)$/gm, '<b>$2</b>');
   function md(s) {
     const parts = esc(s).split(/```(?:\w*\n)?/);
     let out = '';
     for (let i = 0; i < parts.length; i++) {
       if (i % 2 === 1) { out += '<pre>' + parts[i].replace(/\n$/, '') + '</pre>'; continue; }
-      out += linkify(parts[i])
-        .replace(/`([^`\n]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
-        .replace(/^(#{1,4}) (.+)$/gm, '<b>$2</b>');
+      out += ApexTables.renderEscaped(parts[i], inlineMd);
     }
     return out;
   }
@@ -135,7 +137,9 @@ window.ApexChat = (function () {
         '<div class="composer"><div class="stage-row"></div>' +
           '<div class="crow"><textarea rows="2" placeholder="Message the seat — Enter to send, Shift+Enter for a new line"></textarea>' +
           '<button class="csend">Send</button></div></div>' +
-      '</div>';
+      '</div>' +
+      // the operator's constant tracker (J90): the seat's checklist, right of the feed
+      '<aside class="todoPane"></aside>';
     mainEl.appendChild(wrap);
 
     const c = {
@@ -154,6 +158,8 @@ window.ApexChat = (function () {
       curText: null, curBuf: '', runningTool: null,
       staging: null,
     };
+    c.todo = ApexTodoPane({ container: wrap.querySelector('.todoPane'), seatId: id });
+    ApexBus.post('todoGet', { id });
     chats.set(id, c);
 
     // composer wiring
@@ -310,6 +316,32 @@ window.ApexChat = (function () {
     c.feed.scrollTop = c.feed.scrollHeight; c.ta.focus();
   }
 
+  // The operator ruling (2026-07-15): the tab row + its shelf line match the CHAT column's
+  // width, not the window's — measured off the active chat's composer (so the
+  // checklist pane can't skew the centering). Terminals have no composer and
+  // fall back to the full row. rAF because renderTabs often fires before the
+  // freshly-unhidden wrap has layout.
+  function alignTabs() {
+    const c = chats.get(active);
+    const ref = c && !c.pty && !c.wrap.hidden && c.wrap.querySelector('.composer');
+    const r = ref && ref.getBoundingClientRect();
+    if (r && r.width) {
+      const left = r.left - area.getBoundingClientRect().left;
+      tabsEl.style.marginLeft = left + 'px';
+      tabsEl.style.width = r.width + 'px';
+      tabsEl.style.paddingLeft = '2px';
+      tabsEl.style.paddingRight = '0';
+      area.style.setProperty('--tabLeft', left + 'px');
+      area.style.setProperty('--tabW', r.width + 'px');
+      return;
+    }
+    tabsEl.style.marginLeft = ''; tabsEl.style.width = '';
+    tabsEl.style.paddingLeft = ''; tabsEl.style.paddingRight = '';
+    area.style.removeProperty('--tabLeft');
+    area.style.removeProperty('--tabW');
+  }
+  addEventListener('resize', alignTabs);
+
   function renderTabs() {
     tabsEl.textContent = '';
     for (const [id, c] of chats) {
@@ -340,6 +372,7 @@ window.ApexChat = (function () {
       eb.onclick = () => endSession(chats.get(active));
       tabsEl.appendChild(eb);
     }
+    requestAnimationFrame(alignTabs);   // measure after the wrap has layout
   }
 
   // ---------- THE STATUS STRIP (the whole point) ----------
@@ -840,6 +873,7 @@ window.ApexChat = (function () {
     if (m.local) {   // local/qwen seats: no CLI session — no dials, no meter row
       const d = c.wrap.querySelector('.ctxTop');
       if (d) d.hidden = true;
+      if (c.todo) c.todo.hide();   // no file tools either — no checklist
     }
   }
   ApexBus.on('seatNew', mountSeat);
@@ -919,6 +953,10 @@ window.ApexChat = (function () {
     }
   });
   ApexBus.on('seatHistory', (m) => { history = m.history || {}; });
+  ApexBus.on('todoList', (m) => {      // file truth → the checklist pane (J90)
+    const c = chats.get(m.id);
+    if (c && c.todo) c.todo.update(m);
+  });
 
   ApexBus.on('seatEvt', (msg) => {
     const c = chats.get(msg.id);
