@@ -17,6 +17,7 @@ const artifacts = require('./artifacts');
 const extensions = require('./extensions');
 const liveUpdate = require('./liveUpdate');
 const usage = require('./usage');
+const mobile = require('./mobile');
 const { normalizeExternalUrl } = require('./externalUrl');
 
 // apex:// serves local files to the working view's iframe (HTML artifacts) —
@@ -115,6 +116,7 @@ function createWindow() {
   liveUpdate.register(() => win);
   liveUpdate.consumeRestore();
   usage.register();
+  mobile.register();   // the tailnet-only phone face (no Tailscale = no server)
   // The working view's ↗ — open an artifact with the system app. Absolute
   // local paths only; never URLs (no drive-by external opens from seat text).
   bus.on('openPath', (m) => {
@@ -286,6 +288,7 @@ app.on('window-all-closed', () => {
   try { terminal.dispose(); } catch (e) { console.error('terminal.dispose:', e.message); }
   try { artifacts.dispose(); } catch (e) { console.error('artifacts.dispose:', e.message); }
   try { extensions.dispose(); } catch (e) { console.error('extensions.dispose:', e.message); }
+  try { mobile.dispose(); } catch (e) { console.error('mobile.dispose:', e.message); }
   app.quit();
   // hard backstop: if anything (a wedged ConPTY child, a stray handle) keeps
   // the event loop alive, exit anyway — a zombie with the lock is worse

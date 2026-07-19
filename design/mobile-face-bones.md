@@ -1,10 +1,10 @@
 # Mobile Face — bones for ApexShell
 
-*Reference for carrying a slim phone face into ApexShell. Written from the
-Dashboard build (Apex household), genericized for the public shell. This is a
-mechanism spec, not a patch — the trees have drifted (your fork's multi-window
-bus already fans `post()` wider than upstream's single window, which maps
-cleanly onto the sink idea below), so mimic the hooks, don't apply a diff.*
+*STATUS: **implemented in this repo** (`mobile/` + `main/mobile.js` + the
+`bus.js` sink patch + `main.js` registration; boot-smoke + route probes green).
+This doc remains the mechanism walkthrough — if you're merging into a fork
+whose bus has drifted (e.g. a multi-window fan-out), the hooks below are the
+contract to preserve; the code is the reference implementation.*
 
 ## The shape
 

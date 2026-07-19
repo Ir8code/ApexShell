@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The mobile face** (`mobile/` + `main/mobile.js`) — a slim phone-first
+  second face on the same engine, served ONLY on your Tailscale tailnet
+  (no interface = no server; never 0.0.0.0). Chat with streaming, permission
+  cards (questions included), photo attachments (API image blocks) and
+  any-file uploads (staged to `state/mobile-uploads/`, message carries the
+  path), per-seat working dash + busy chips, VIEW drawer (the working view:
+  images/text inline, html via an announcement-allowlisted route), AI drawer
+  (usage trackers + model/effort/permissions/browser dials + end/close), a
+  remembered active chat, self-reload on reconnect, and an update-glow logo
+  that restarts the app (desktop safeGate mirrored: busy seats arm a
+  tap-again warning). Installable as a home-screen app: web manifest +
+  maskable icons; put real HTTPS on it with `tailscale serve` (the loopback
+  twin listener is its door). Inbound frames pass a strict field-by-field
+  whitelist — no PTY spawns, launch configs, or browser grants can originate
+  from a phone. Mechanism walkthrough: `design/mobile-face-bones.md`.
+  New dependency: `ws`.
+
 - **New extension: Wiki Pipeline** (`extensions/wiki/`) — turn raw material into
   a durable, interlinked wiki. Intake is free (add entries to a derived queue,
   pure code); compile is the only token spend — a **tool-less** model seat reads
