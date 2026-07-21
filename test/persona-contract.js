@@ -80,7 +80,7 @@ gate('safe persona IDs accept lowercase kebab-case', () => {
 });
 
 gate('unsafe persona IDs are rejected', () => {
-  for (const id of ['', 'Mox', '../escape', 'two words', '-leading', 'trailing-'])
+  for (const id of ['', 'Ada', '../escape', 'two words', '-leading', 'trailing-'])
     assert.equal(contract.isSafePersonaId(id), false, id);
 });
 

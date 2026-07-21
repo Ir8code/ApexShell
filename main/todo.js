@@ -8,7 +8,7 @@
 //     rides an <apex-todo-brief> tag prepended to the first user turn — the
 //     same invisible lane the engine's env brief uses; '<'-prefixed messages
 //     stay out of transcript backfills);
-//   - KEITH edits through the panel (todoAdd/todoUpdate/todoRemove bus verbs),
+//   - the OPERATOR edits through the panel (todoAdd/todoUpdate/todoRemove bus verbs),
 //     which writes the file here and NOTIFIES the seat with an
 //     <apex-todo-update> user turn — deferred while the seat is mid-turn,
 //     coalesced, and never sent before the seat's first real message (a
