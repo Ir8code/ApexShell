@@ -11,6 +11,7 @@ const bus = require('./bus');
 const store = require('./store');
 const artifacts = require('./artifacts');
 const todo = require('./todo');
+const seams = require('./seams');
 const { createSeatHost } = require('./engine/seatHost');
 
 // ---- seat presets: the shell ships ZERO named seats. Extensions register a
@@ -144,6 +145,7 @@ function register() {
     wrapPrompt: () => wrapOverride,  // lazy: extensions register after us
     emit: (m) => {
       todo.onSeatEvent(m);                         // seat lifecycle → todo tracker (J90)
+      seams.onSeatEvent(m);                        // seat lifecycle → seam channels
       if (m.type === 'seatEvt' && m.m.type === 'artifactCandidate') {
         artifacts.candidate(m.id, m.m.path);       // app-level concern, not engine
         return;
@@ -172,6 +174,28 @@ function register() {
     stateDir: path.join(__dirname, '..', 'state', 'todo'),
     log: (l) => wireLog(l) });
 
+  // seam channels: global multi-party lanes (mechanism-only port — no panel).
+  // createSeat opens a FRESH persona seat for a seam recipient and returns the
+  // seat id, seating the persona through the preset kickoff exactly like a
+  // rail-button click (Codex-configured personas included). A UI can be wired
+  // later against the seam* bus verbs register() exposes.
+  seams.register({ host, bus,
+    stateDir: path.join(__dirname, '..', 'state', 'seams'),
+    log: (l) => wireLog(l),
+    createSeat: (persona, title) => {
+      const preset = presets.get(persona);
+      if (!preset) return null;
+      const launch = launchFor(persona);
+      if (launch.model === 'codex') {
+        return host.create(preset.kickoff || null, title || ('New chat - ' + persona),
+          { persona, cwd: seatCwd(persona),
+            launch: { model: 'codex', codexModel: launch.codexModel,
+                      effort: launch.effort, permissionMode: launch.permissionMode } });
+      }
+      return host.create(preset.kickoff || null, title || ('New chat - ' + persona),
+        { persona, cwd: seatCwd(persona), launch });
+    } });
+
   // view → engine (exact types — the engine validates its own set again).
   // seatPtyInput/seatPtyResize were in the ENGINE's claim set but never
   // registered here — every terminal keystroke died at the bus (2026-07-12).
@@ -182,7 +206,7 @@ function register() {
                    'seatWrap'])
     bus.on(t, (msg) => host.handle(msg));
   bus.on('seatSend', (msg) => host.handle(todo.briefOnFirstSend(msg)));
-  bus.on('seatClose', (msg) => { artifacts.seatClosed(msg.id); todo.seatClosed(msg.id); host.handle(msg); });
+  bus.on('seatClose', (msg) => { artifacts.seatClosed(msg.id); todo.seatClosed(msg.id); seams.seatClosed(msg.id); host.handle(msg); });
 
   createFromMessage = (msg) => {
     if (msg.terminal) {
@@ -293,6 +317,7 @@ function register() {
     const { sessionId, persona, title, mode, model, codexModel, effort } = entry;
     artifacts.seatClosed(msg.id);
     todo.seatClosed(msg.id);   // the resumed seat re-binds the same file (J90)
+    seams.seatClosed(msg.id);  // seam participants re-bind by session id
     host.handle({ type: 'seatClose', id: msg.id });
     bus.post('seatGone', { id: msg.id });
     setTimeout(() => {                       // past the kill backstop: transcript flushed
